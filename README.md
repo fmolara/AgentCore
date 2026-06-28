@@ -20,9 +20,8 @@ Current runtime roles:
 - Secondary runtime: LMDeploy
 - Reference runtime: HuggingFace Transformers
 
-The first implementation includes only the minimal platform skeleton and a
-working `TransformersRuntime` reference backend. SGLang and LMDeploy process
-management will be added after the public API is stable.
+The platform currently includes runtime adapters for all three backends while
+keeping the public `AgentLab` API runtime-independent.
 
 ## Public API
 
@@ -49,3 +48,20 @@ cd /home/federico.molara/a100-agent-lab
 ```
 
 Generation events are written as JSONL under `experiments/logs/`.
+
+## Tests
+
+Lightweight tests do not load the 27B model and do not require a GPU:
+
+```bash
+cd /home/federico.molara/a100-agent-lab
+/home/federico.molara/venv/a100-runtime/bin/python -m pytest
+```
+
+Runtime integration tests are opt-in because they start real runtimes and may
+load the model:
+
+```bash
+A100_AGENT_LAB_RUN_INTEGRATION=1 \
+  /home/federico.molara/venv/a100-runtime/bin/python -m pytest -m integration
+```

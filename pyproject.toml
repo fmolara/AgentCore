@@ -15,8 +15,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+  "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["a100_agent_lab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: opt-in tests that start real runtimes and may require GPU/model access",
+]
