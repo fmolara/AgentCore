@@ -51,6 +51,32 @@ def log_path(lab: AgentLab) -> str | None:
     return str(path) if path else None
 
 
+def format_memory(used: int | None, total: int | None) -> str:
+    if used is None:
+        return "-"
+    if total is None:
+        return f"{used} MiB"
+    return f"{used}/{total} MiB"
+
+
+def print_runtime_health(health: dict) -> None:
+    print("runtime health")
+    print(f"runtime: {health.get('runtime_name')} ({health.get('backend_type')})")
+    print(f"model: {health.get('model_path')}")
+    print(f"ready: {health.get('ready')}")
+    print(
+        "GPU: "
+        f"{health.get('gpu_name') or '-'} "
+        f"{format_memory(health.get('gpu_memory_used_mib'), health.get('gpu_memory_total_mib'))}"
+    )
+    if health.get("endpoint"):
+        print(f"endpoint: {health.get('endpoint')}")
+    if health.get("process_pid"):
+        print(f"PID: {health.get('process_pid')}")
+    if health.get("last_error"):
+        print(f"last error: {health.get('last_error')}")
+
+
 def print_table(rows: list[dict]) -> None:
     print()
     print("turn  prompt_tok  gen_tok  ttft_s  tok/s   wall_s")
@@ -73,7 +99,7 @@ def main() -> None:
 
     lab.start()
     try:
-        print(f"runtime ready: {lab.health()}")
+        print_runtime_health(lab.health())
         if args.warmup:
             warmup = lab.warmup(max_tokens=16)
             print(f"warmup: {warmup.metrics.as_dict()}")
@@ -100,6 +126,8 @@ def main() -> None:
         print(f"average TTFT: {statistics.mean(ttfts):.3f} s")
         print(f"average tokens/sec: {statistics.mean(tps):.2f}")
         print(f"average tokens/sec excluding turn 1: {statistics.mean(tps_excluding_turn1):.2f}")
+        print()
+        print_runtime_health(lab.statistics())
         print(f"log path: {log_path(lab)}")
     finally:
         lab.shutdown()
@@ -107,4 +135,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

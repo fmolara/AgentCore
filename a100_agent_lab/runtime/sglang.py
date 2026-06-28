@@ -11,6 +11,7 @@ from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.events import generation_event
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
+from a100_agent_lab.runtime.health import normalized_health, query_gpu
 from a100_agent_lab.runtime.server_process import ServerProcess
 from a100_agent_lab.sessions.session import Session
 
@@ -28,6 +29,7 @@ class SGLangRuntime(Runtime):
         self.log_writer = log_writer
         self.tokenizer = None
         self.api_base = self._api_base()
+        self.last_warmup_wall_sec: float | None = None
         self.server = ServerProcess(
             runtime_name="sglang",
             api_base=self.api_base,
@@ -61,16 +63,31 @@ class SGLangRuntime(Runtime):
         return self.server.ready()
 
     def health(self) -> dict[str, Any]:
-        return self.server.health()
+        server_health = self.server.health()
+        return normalized_health(
+            runtime_name="sglang",
+            backend_type="server",
+            model_path=self.config.get("model", {}).get("path"),
+            ready=server_health["ready"],
+            server_ready_time_sec=server_health["ready_sec"],
+            warmup_wall_sec=self.last_warmup_wall_sec,
+            process_pid=server_health["process_pid"],
+            endpoint=server_health["api_base"],
+            last_error=server_health["last_error"],
+            gpu=query_gpu(self.config.get("gpu", {}).get("device", 0)),
+            extra={"server_log_path": server_health["server_log_path"]},
+        )
 
     def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         session = self.create_session()
-        return self._generate(
+        result = self._generate(
             session,
             prompt or "Say ready.",
             event_type="warmup",
             max_tokens=max_tokens,
         )
+        self.last_warmup_wall_sec = result.metrics.wall_sec
+        return result
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
         return Session(system_prompt=system_prompt)

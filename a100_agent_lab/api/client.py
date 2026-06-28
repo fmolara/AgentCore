@@ -41,6 +41,9 @@ class AgentLab:
     def health(self) -> dict[str, Any]:
         return self.runtime.health()
 
+    def statistics(self) -> dict[str, Any]:
+        return self.runtime.statistics()
+
     def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         return self.runtime.warmup(prompt=prompt, max_tokens=max_tokens)
 

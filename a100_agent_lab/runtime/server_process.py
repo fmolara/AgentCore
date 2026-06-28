@@ -33,6 +33,7 @@ class ServerProcess:
         self.log_file = None
         self.log_path: Path | None = None
         self.ready_sec: float | None = None
+        self.last_error: str | None = None
 
     def start(
         self,
@@ -61,8 +62,13 @@ class ServerProcess:
             text=True,
             start_new_session=True,
         )
-        self.wait_ready(timeout)
-        self.ready_sec = time.perf_counter() - start
+        try:
+            self.wait_ready(timeout)
+            self.ready_sec = time.perf_counter() - start
+            self.last_error = None
+        except Exception as exc:
+            self.last_error = repr(exc)
+            raise
 
     def shutdown(self) -> None:
         if self.process is not None and self.process.poll() is None:
@@ -108,6 +114,7 @@ class ServerProcess:
             "ready_sec": self.ready_sec,
             "server_log_path": str(self.log_path) if self.log_path else None,
             "process_pid": self.process.pid if self.process else None,
+            "last_error": self.last_error,
         }
 
     def stream_chat(self, payload: dict[str, Any]) -> Iterator[str]:
@@ -131,6 +138,7 @@ class ServerProcess:
                     yield delta.get("content") or ""
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")
+            self.last_error = f"HTTP {exc.code}: {body[:1000]}"
             raise RuntimeError(f"{self.runtime_name} HTTP {exc.code}: {body[:1000]}") from exc
 
     def get(self, path: str, *, timeout: float) -> str:
@@ -141,4 +149,3 @@ class ServerProcess:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return self.log_dir / f"{self.log_prefix}-{stamp}.log"
-

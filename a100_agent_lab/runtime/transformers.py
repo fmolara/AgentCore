@@ -12,6 +12,7 @@ from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.events import generation_event
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
+from a100_agent_lab.runtime.health import normalized_health, query_gpu
 from a100_agent_lab.sessions.session import Session
 
 
@@ -23,6 +24,8 @@ class TransformersRuntime(Runtime):
         self.model = None
         self.torch = None
         self.load_sec: float | None = None
+        self.last_warmup_wall_sec: float | None = None
+        self.last_error: str | None = None
         self.device = config.get("gpu", {}).get("device", "cuda:0")
 
     def load(self) -> None:
@@ -77,21 +80,35 @@ class TransformersRuntime(Runtime):
                 "memory_allocated_mib": round(self.torch.cuda.memory_allocated() / 1024 / 1024, 2),
                 "memory_reserved_mib": round(self.torch.cuda.memory_reserved() / 1024 / 1024, 2),
             }
-        return {
-            "ready": self.ready(),
-            "runtime": "transformers",
-            "load_sec": self.load_sec,
-            "gpu": gpu,
-        }
+        extra = {"load_time_sec": self.load_sec}
+        if gpu:
+            extra.update(
+                {
+                    "gpu_memory_allocated_mib": gpu["memory_allocated_mib"],
+                    "gpu_memory_reserved_mib": gpu["memory_reserved_mib"],
+                }
+            )
+        return normalized_health(
+            runtime_name="transformers",
+            backend_type="in_process",
+            model_path=self.config.get("model", {}).get("path"),
+            ready=self.ready(),
+            warmup_wall_sec=self.last_warmup_wall_sec,
+            last_error=self.last_error,
+            gpu=query_gpu(self.device),
+            extra=extra,
+        )
 
     def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         session = self.create_session()
-        return self._generate(
+        result = self._generate(
             session,
             prompt or "Say ready.",
             event_type="warmup",
             max_tokens=max_tokens,
         )
+        self.last_warmup_wall_sec = result.metrics.wall_sec
+        return result
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
         return Session(system_prompt=system_prompt)
