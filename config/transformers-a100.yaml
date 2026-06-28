@@ -1,0 +1,23 @@
+runtime: transformers
+
+model:
+  path: /home/models/Qwen3.6-27B
+  dtype: bfloat16
+  trust_remote_code: true
+
+gpu:
+  device: cuda:0
+
+context:
+  max_context_tokens: 4096
+
+generation:
+  temperature: 0
+  max_tokens: 64
+  top_p: 1.0
+  enable_thinking: false
+
+logging:
+  path: experiments/logs
+  format: jsonl
+
