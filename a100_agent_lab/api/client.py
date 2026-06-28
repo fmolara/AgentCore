@@ -9,6 +9,7 @@ import yaml
 from a100_agent_lab.generation.result import GenerationResult
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
+from a100_agent_lab.runtime.sglang import SGLangRuntime
 from a100_agent_lab.runtime.transformers import TransformersRuntime
 from a100_agent_lab.sessions.session import Session
 
@@ -56,7 +57,9 @@ class AgentLab:
         writer = self._build_log_writer()
         if runtime_name == "transformers":
             return TransformersRuntime(self.config, log_writer=writer)
-        if runtime_name in {"sglang", "lmdeploy"}:
+        if runtime_name == "sglang":
+            return SGLangRuntime(self.config, project_root=self.project_root, log_writer=writer)
+        if runtime_name == "lmdeploy":
             raise NotImplementedError(f"{runtime_name} runtime adapter is not implemented yet")
         raise ValueError(f"unknown runtime: {runtime_name}")
 
@@ -69,4 +72,3 @@ class AgentLab:
             log_dir = self.project_root / log_dir
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return JsonlWriter(log_dir / f"generation-{stamp}.jsonl")
-
