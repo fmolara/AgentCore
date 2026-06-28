@@ -25,7 +25,7 @@ class Runtime(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def warmup(self) -> GenerationResult:
+    def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -47,4 +47,3 @@ class Runtime(ABC):
     @abstractmethod
     def statistics(self) -> dict[str, Any]:
         raise NotImplementedError
-

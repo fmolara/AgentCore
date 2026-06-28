@@ -12,10 +12,12 @@ def generation_event(
     session: Session,
     result: GenerationResult,
     health: dict[str, Any],
+    *,
+    event_type: str = "generation",
 ) -> dict[str, Any]:
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
-        "event": "generation",
+        "event_type": event_type,
         "runtime": runtime,
         "session_id": session.id,
         "turn": sum(1 for message in session.messages if message.role == "assistant"),
@@ -23,4 +25,3 @@ def generation_event(
         "health": health,
         "status": "ok",
     }
-

@@ -84,14 +84,29 @@ class TransformersRuntime(Runtime):
             "gpu": gpu,
         }
 
-    def warmup(self) -> GenerationResult:
+    def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         session = self.create_session()
-        return self.generate(session, "Say ready.", max_tokens=4)
+        return self._generate(
+            session,
+            prompt or "Say ready.",
+            event_type="warmup",
+            max_tokens=max_tokens,
+        )
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
         return Session(system_prompt=system_prompt)
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
+        return self._generate(session, prompt, event_type="generation", **kwargs)
+
+    def _generate(
+        self,
+        session: Session,
+        prompt: str,
+        *,
+        event_type: str,
+        **kwargs: Any,
+    ) -> GenerationResult:
         if not self.ready():
             raise RuntimeError("runtime is not loaded")
 
@@ -159,7 +174,9 @@ class TransformersRuntime(Runtime):
         result = GenerationResult(text=text, metrics=metrics)
 
         if self.log_writer is not None:
-            self.log_writer.write(generation_event("transformers", session, result, self.health()))
+            self.log_writer.write(
+                generation_event("transformers", session, result, self.health(), event_type=event_type)
+            )
 
         return result
 

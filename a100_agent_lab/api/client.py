@@ -40,8 +40,8 @@ class AgentLab:
     def health(self) -> dict[str, Any]:
         return self.runtime.health()
 
-    def warmup(self) -> GenerationResult:
-        return self.runtime.warmup()
+    def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
+        return self.runtime.warmup(prompt=prompt, max_tokens=max_tokens)
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
         return self.runtime.create_session(system_prompt=system_prompt)

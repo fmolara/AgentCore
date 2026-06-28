@@ -106,14 +106,29 @@ class SGLangRuntime(Runtime):
             "process_pid": self.process.pid if self.process else None,
         }
 
-    def warmup(self) -> GenerationResult:
+    def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         session = self.create_session()
-        return self.generate(session, "Say ready.", max_tokens=4)
+        return self._generate(
+            session,
+            prompt or "Say ready.",
+            event_type="warmup",
+            max_tokens=max_tokens,
+        )
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
         return Session(system_prompt=system_prompt)
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
+        return self._generate(session, prompt, event_type="generation", **kwargs)
+
+    def _generate(
+        self,
+        session: Session,
+        prompt: str,
+        *,
+        event_type: str,
+        **kwargs: Any,
+    ) -> GenerationResult:
         if not self.ready():
             raise RuntimeError("SGLang server is not ready")
 
@@ -160,7 +175,7 @@ class SGLangRuntime(Runtime):
         )
 
         if self.log_writer is not None:
-            self.log_writer.write(generation_event("sglang", session, result, self.health()))
+            self.log_writer.write(generation_event("sglang", session, result, self.health(), event_type=event_type))
 
         return result
 
@@ -288,4 +303,3 @@ class SGLangRuntime(Runtime):
         log_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return log_dir / f"sglang-server-{stamp}.log"
-
