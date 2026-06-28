@@ -1,0 +1,11 @@
+Analizza una piccola codebase C: spiega come organizzeresti parsing, stato e test.
+Ora immagina che il parser abbia un bug di gestione memoria: proponi una strategia di debug con valgrind e assert.
+Scrivi una patch concettuale per separare lexer e parser mantenendo API C semplice.
+Proponi un test plan per verificare errori di sintassi, input vuoto e token troppo lunghi.
+Fai una review severa della patch concettuale: quali regressioni introdurrebbe?
+Suggerisci come rendere thread-safe il parser senza rendere l'API troppo complessa.
+Progetta una cache interna per simboli ricorrenti e spiega quando invalidarla.
+Spiega come misureresti performance e allocazioni del parser in un benchmark ripetibile.
+Prepara una nota di architettura per integrare il parser in un piccolo server UNIX.
+Riassumi le decisioni finali e indica i primi tre commit da fare.
+
