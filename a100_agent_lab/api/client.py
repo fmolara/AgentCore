@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from a100_agent_lab.agents import Agent
 from a100_agent_lab.generation.result import GenerationResult
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -63,6 +64,22 @@ class AgentLab:
 
     def delete_session(self, session_id: str) -> bool:
         return self.sessions.delete(session_id)
+
+    def create_agent(
+        self,
+        *,
+        system_prompt: str | None = None,
+        session: Session | None = None,
+        generation_options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Agent:
+        return Agent(
+            self,
+            system_prompt=system_prompt,
+            session=session,
+            generation_options=generation_options,
+            **kwargs,
+        )
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
         return self.runtime.generate(session, prompt, **kwargs)

@@ -40,6 +40,25 @@ print(result.metrics)
 lab.shutdown()
 ```
 
+The higher-level `Agent` abstraction owns one persistent session and exposes a
+simple conversational API:
+
+```python
+from a100_agent_lab import AgentLab
+
+lab = AgentLab.from_config("config/sglang-a100.yaml")
+lab.start()
+lab.warmup()
+
+agent = lab.create_agent(system_prompt="You are a concise coding assistant.")
+reply = agent.ask("Explain pointer arithmetic.")
+
+print(reply.text)
+print(agent.statistics())
+
+lab.shutdown()
+```
+
 Multiple independent sessions can be managed by id:
 
 ```python
