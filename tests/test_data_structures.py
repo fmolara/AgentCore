@@ -24,6 +24,7 @@ def test_session_tracks_transcript_and_reset() -> None:
     session.add_user_message("Explain C pointers.")
     session.add_assistant_message("Pointers store addresses.")
 
+    assert session.turn_count == 1
     assert session.transcript() == [
         {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "Explain C pointers."},
@@ -34,6 +35,7 @@ def test_session_tracks_transcript_and_reset() -> None:
     session.reset()
 
     assert session.transcript() == [{"role": "system", "content": "Be concise."}]
+    assert session.turn_count == 0
 
 
 def test_generation_config_from_dict_and_override() -> None:

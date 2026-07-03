@@ -38,6 +38,10 @@ class Session:
     def transcript(self) -> list[dict[str, str]]:
         return [message.as_dict() for message in self.messages]
 
+    @property
+    def turn_count(self) -> int:
+        return sum(1 for message in self.messages if message.role == "assistant")
+
     def reset(self) -> None:
         self.messages.clear()
         if self.system_prompt:
@@ -46,4 +50,3 @@ class Session:
 
     def _touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc)
-

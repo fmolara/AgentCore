@@ -40,6 +40,25 @@ print(result.metrics)
 lab.shutdown()
 ```
 
+Multiple independent sessions can be managed by id:
+
+```python
+first = lab.create_session(system_prompt="You are session one.")
+second = lab.create_session(system_prompt="You are session two.")
+
+lab.generate(first, "Explain malloc.")
+lab.generate(second, "Explain fork.")
+
+assert first.id != second.id
+assert first.turn_count == 1
+assert second.turn_count == 1
+
+same_first = lab.get_session(first.id)
+all_sessions = lab.list_sessions()
+lab.reset_session(first.id)
+lab.delete_session(second.id)
+```
+
 ## Smoke Test
 
 ```bash

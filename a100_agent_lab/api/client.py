@@ -13,6 +13,7 @@ from a100_agent_lab.runtime.lmdeploy import LMDeployRuntime
 from a100_agent_lab.runtime.sglang import SGLangRuntime
 from a100_agent_lab.runtime.transformers import TransformersRuntime
 from a100_agent_lab.sessions.session import Session
+from a100_agent_lab.sessions.store import SessionStore
 
 
 class AgentLab:
@@ -20,6 +21,7 @@ class AgentLab:
         self.config = config
         self.project_root = project_root
         self.runtime = self._build_runtime()
+        self.sessions = SessionStore(self.runtime.create_session)
 
     @classmethod
     def from_config(cls, path: str | Path) -> "AgentLab":
@@ -48,7 +50,19 @@ class AgentLab:
         return self.runtime.warmup(prompt=prompt, max_tokens=max_tokens)
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
-        return self.runtime.create_session(system_prompt=system_prompt)
+        return self.sessions.create(system_prompt=system_prompt)
+
+    def get_session(self, session_id: str) -> Session:
+        return self.sessions.get(session_id)
+
+    def list_sessions(self) -> list[Session]:
+        return self.sessions.list()
+
+    def reset_session(self, session_id: str) -> Session:
+        return self.sessions.reset(session_id)
+
+    def delete_session(self, session_id: str) -> bool:
+        return self.sessions.delete(session_id)
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
         return self.runtime.generate(session, prompt, **kwargs)
