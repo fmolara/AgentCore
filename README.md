@@ -1,7 +1,8 @@
-# A100 Agent Lab
+# AgentCore
 
-A100 Agent Lab is an experimental platform for building persistent coding-agent
-systems on an NVIDIA A100 80GB PCIe server.
+AgentCore is an experimental platform for building persistent coding-agent
+systems on an NVIDIA A100 80GB PCIe server. The Python package is currently
+named `a100_agent_lab`.
 
 This project is not an LLM runtime. It is the application and orchestration
 layer that sits on top of existing runtimes such as:
@@ -24,6 +25,12 @@ The platform currently includes runtime adapters for all three backends while
 keeping the public `AgentLab` API runtime-independent.
 
 ## Public API
+
+Normal application code should interact with:
+
+- `AgentLab`
+- `Agent`
+- `Session`
 
 ```python
 from a100_agent_lab import AgentLab
@@ -103,3 +110,11 @@ load the model:
 A100_AGENT_LAB_RUN_INTEGRATION=1 \
   /home/federico.molara/venv/a100-runtime/bin/python -m pytest -m integration
 ```
+
+## Architecture
+
+Milestone 1 architecture documents:
+
+- [Core Platform](docs/architecture/CORE_PLATFORM.md)
+- [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
+- [Roadmap](docs/architecture/ROADMAP.md)
