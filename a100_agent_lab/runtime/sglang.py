@@ -194,7 +194,7 @@ class SGLangRuntime(Runtime):
         gpu_cfg = self.config.get("gpu", {})
 
         cmd = [
-            server_cfg.get("python", "/home/sglang/venv/bin/python"),
+            server_cfg.get("python", "python"),
             "-m",
             "sglang.launch_server",
             "--model-path",

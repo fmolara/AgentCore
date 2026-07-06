@@ -6,7 +6,7 @@ code should not need to change when switching backends through configuration.
 
 Current model used for validation:
 
-- `/home/models/Qwen3.6-27B`
+- `models/Qwen3.6-27B`
 - NVIDIA A100 80GB PCIe
 - BF16
 - persistent chat/coding-agent style prompts
@@ -91,8 +91,10 @@ Benchmark summary:
 
 Operational notes:
 
-- current config uses `/home/sglang/venv/bin/python`;
-- PATH must include `/home/sglang/venv/bin`;
+- current config expects `python` to resolve to an environment with SGLang
+  installed;
+- set `server.path_prefix` locally if the SGLang executable environment is not
+  already on `PATH`;
 - server logs are written under `experiments/logs/`;
 - health includes endpoint, PID, ready time, GPU memory, and last error.
 
@@ -128,7 +130,7 @@ Benchmark summary:
 
 Operational notes:
 
-- current config uses `/opt/lmdeploy/bin/lmdeploy`;
+- current config expects `lmdeploy` to be available on `PATH`;
 - health includes endpoint, PID, ready time, GPU memory, utilization, power,
   and last error;
 - useful as a production-capable alternate backend.

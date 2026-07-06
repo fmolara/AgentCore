@@ -104,8 +104,7 @@ lab.delete_session(second.id)
 ## Smoke Test
 
 ```bash
-cd /home/federico.molara/a100-agent-lab
-/home/federico.molara/venv/a100-runtime/bin/python scripts/smoke_transformers.py
+python scripts/smoke_transformers.py
 ```
 
 Generation events are written as JSONL under `experiments/logs/`.
@@ -115,8 +114,7 @@ Generation events are written as JSONL under `experiments/logs/`.
 Lightweight tests do not load the 27B model and do not require a GPU:
 
 ```bash
-cd /home/federico.molara/a100-agent-lab
-/home/federico.molara/venv/a100-runtime/bin/python -m pytest
+python -m pytest
 ```
 
 Runtime integration tests are opt-in because they start real runtimes and may
@@ -124,7 +122,7 @@ load the model:
 
 ```bash
 A100_AGENT_LAB_RUN_INTEGRATION=1 \
-  /home/federico.molara/venv/a100-runtime/bin/python -m pytest -m integration
+  python -m pytest -m integration
 ```
 
 ## Architecture

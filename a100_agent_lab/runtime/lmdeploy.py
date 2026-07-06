@@ -201,7 +201,7 @@ class LMDeployRuntime(Runtime):
         model_cfg = self.config["model"]
         context_cfg = self.config.get("context", {})
         return [
-            server_cfg.get("executable", "/opt/lmdeploy/bin/lmdeploy"),
+            server_cfg.get("executable", "lmdeploy"),
             "serve",
             "api_server",
             model_cfg["path"],
