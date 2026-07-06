@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.sessions.session import Session
+from a100_agent_lab.workspace import Workspace
 
 if TYPE_CHECKING:
     from a100_agent_lab.api.client import AgentLab
@@ -16,11 +18,20 @@ class Agent:
         *,
         system_prompt: str | None = None,
         session: Session | None = None,
+        workspace: Workspace | None = None,
+        workspace_root: str | Path | None = None,
+        workspace_mode: str = Workspace.READ_WRITE,
+        workspace_metadata: dict[str, Any] | None = None,
         generation_options: dict[str, Any] | None = None,
         **kwargs: Any,
     ):
         self.lab = lab
         self.session = session or lab.create_session(system_prompt=system_prompt)
+        self.workspace = workspace or Workspace(
+            workspace_root or lab.default_workspace_root(),
+            mode=workspace_mode,
+            metadata=workspace_metadata,
+        )
         self.generation_options = dict(generation_options or {})
         self.generation_options.update({key: value for key, value in kwargs.items() if value is not None})
         self._last_result: GenerationResult | None = None
@@ -62,6 +73,7 @@ class Agent:
             "last_tokens_per_sec": None if metrics is None else metrics.tokens_per_sec,
             "last_wall_sec": None if metrics is None else metrics.wall_sec,
             "generation_options": dict(self.generation_options),
+            "workspace": self.workspace.as_dict(),
         }
 
     def _merged_options(self, overrides: dict[str, Any]) -> dict[str, Any]:

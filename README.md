@@ -66,6 +66,22 @@ print(agent.statistics())
 lab.shutdown()
 ```
 
+Each agent owns one managed workspace. Workspace operations are restricted to
+the workspace root:
+
+```python
+agent = lab.create_agent(
+    system_prompt="You are a concise coding assistant.",
+    workspace_root="workspace/project-a",
+)
+
+agent.workspace.mkdir("notes")
+agent.workspace.write_text("notes/pointers.txt", "Pointer arithmetic scales by element size.\n")
+
+print(agent.workspace.list("notes"))
+print(agent.workspace.read_text("notes/pointers.txt"))
+```
+
 Multiple independent sessions can be managed by id:
 
 ```python

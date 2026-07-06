@@ -15,6 +15,7 @@ from a100_agent_lab.runtime.sglang import SGLangRuntime
 from a100_agent_lab.runtime.transformers import TransformersRuntime
 from a100_agent_lab.sessions.session import Session
 from a100_agent_lab.sessions.store import SessionStore
+from a100_agent_lab.workspace import Workspace
 
 
 class AgentLab:
@@ -70,6 +71,10 @@ class AgentLab:
         *,
         system_prompt: str | None = None,
         session: Session | None = None,
+        workspace: Workspace | None = None,
+        workspace_root: str | Path | None = None,
+        workspace_mode: str = Workspace.READ_WRITE,
+        workspace_metadata: dict[str, Any] | None = None,
         generation_options: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Agent:
@@ -77,9 +82,20 @@ class AgentLab:
             self,
             system_prompt=system_prompt,
             session=session,
+            workspace=workspace,
+            workspace_root=workspace_root,
+            workspace_mode=workspace_mode,
+            workspace_metadata=workspace_metadata,
             generation_options=generation_options,
             **kwargs,
         )
+
+    def default_workspace_root(self) -> Path:
+        workspace_cfg = self.config.get("workspace", {})
+        root = Path(workspace_cfg.get("root", "workspace"))
+        if not root.is_absolute():
+            root = self.project_root / root
+        return root
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
         return self.runtime.generate(session, prompt, **kwargs)

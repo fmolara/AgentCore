@@ -59,17 +59,17 @@ class FakeRuntime(Runtime):
         return self.health()
 
 
-def make_lab() -> AgentLab:
+def make_lab(workspace_root: Path) -> AgentLab:
     lab = AgentLab.__new__(AgentLab)
-    lab.config = {"runtime": "fake"}
+    lab.config = {"runtime": "fake", "workspace": {"root": str(workspace_root)}}
     lab.project_root = Path(".")
     lab.runtime = FakeRuntime()
     lab.sessions = SessionStore(lab.runtime.create_session)
     return lab
 
 
-def test_agent_ask_tracks_session_and_metrics() -> None:
-    lab = make_lab()
+def test_agent_ask_tracks_session_metrics_and_workspace(tmp_path) -> None:
+    lab = make_lab(tmp_path / "workspace")
     lab.start()
 
     agent = lab.create_agent(
@@ -92,10 +92,13 @@ def test_agent_ask_tracks_session_and_metrics() -> None:
     assert stats["last_ttft_sec"] == 0.05
     assert stats["last_tokens_per_sec"] == 42.0
     assert stats["generation_options"] == {"max_tokens": 32, "temperature": 0}
+    assert stats["workspace"]["root"] == str(tmp_path / "workspace")
+    agent.workspace.write_text("notes.txt", "workspace state\n")
+    assert agent.workspace.read_text("notes.txt") == "workspace state\n"
 
 
-def test_agent_reset_clears_conversation_and_metrics() -> None:
-    lab = make_lab()
+def test_agent_reset_clears_conversation_and_metrics(tmp_path) -> None:
+    lab = make_lab(tmp_path / "workspace")
     lab.start()
     agent = lab.create_agent(system_prompt="Keep context.")
 
@@ -111,8 +114,8 @@ def test_agent_reset_clears_conversation_and_metrics() -> None:
     assert agent.statistics()["last_ttft_sec"] is None
 
 
-def test_two_agents_keep_independent_sessions() -> None:
-    lab = make_lab()
+def test_two_agents_keep_independent_sessions(tmp_path) -> None:
+    lab = make_lab(tmp_path / "workspace")
     lab.start()
 
     first = lab.create_agent(system_prompt="Agent one.")
