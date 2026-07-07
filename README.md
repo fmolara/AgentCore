@@ -82,6 +82,21 @@ print(agent.workspace.list("notes"))
 print(agent.workspace.read_text("notes/pointers.txt"))
 ```
 
+Local Git operations are also scoped to the same workspace root. No clone,
+fetch, pull, or push API is exposed:
+
+```python
+agent.git.init()
+agent.workspace.write_text("notes/pointers.txt", "Pointer arithmetic scales by element size.\n")
+
+print(agent.git.status().stdout)
+
+agent.git.add(["notes/pointers.txt"])
+agent.git.commit("Add pointer notes")
+
+print(agent.git.log(limit=3).stdout)
+```
+
 Multiple independent sessions can be managed by id:
 
 ```python

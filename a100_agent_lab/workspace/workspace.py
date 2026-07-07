@@ -39,6 +39,9 @@ class Workspace:
             self.cwd.mkdir(parents=True, exist_ok=True)
         if not self.cwd.is_dir():
             raise NotADirectoryError(f"workspace cwd is not a directory: {self.cwd}")
+        from a100_agent_lab.workspace.git import GitWorkspace
+
+        self.git = GitWorkspace(self)
 
     @property
     def read_only(self) -> bool:

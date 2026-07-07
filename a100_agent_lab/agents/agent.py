@@ -43,6 +43,10 @@ class Agent:
         return self.lab.runtime
 
     @property
+    def git(self):
+        return self.workspace.git
+
+    @property
     def last_metrics(self) -> GenerationMetrics | None:
         return None if self._last_result is None else self._last_result.metrics
 
