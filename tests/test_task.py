@@ -6,7 +6,15 @@ from typing import Any, Iterator
 
 import pytest
 
-from a100_agent_lab import AgentLab, Task, TaskCheckpoint, TaskCheckpointComparison, TaskReport, TaskStatus
+from a100_agent_lab import (
+    AgentLab,
+    Task,
+    TaskCheckpoint,
+    TaskCheckpointComparison,
+    TaskCheckpointRestorePlan,
+    TaskReport,
+    TaskStatus,
+)
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -347,6 +355,52 @@ def test_task_compare_checkpoint_validation() -> None:
 
     with pytest.raises(ValueError):
         task.compare_checkpoints("missing", "also-missing")
+
+
+def test_task_restore_plan_without_git_state_is_not_safe() -> None:
+    task = Task(title="Refactor parser")
+    checkpoint = task.create_checkpoint("manual checkpoint")
+
+    plan = task.plan_restore_checkpoint(checkpoint)
+    encoded = json.dumps(plan.as_dict())
+    decoded = json.loads(encoded)
+
+    assert isinstance(plan, TaskCheckpointRestorePlan)
+    assert decoded["target_checkpoint"]["id"] == checkpoint.id
+    assert decoded["current_git_status"] is None
+    assert decoded["current_git_diff"] is None
+    assert decoded["safe_to_restore"] is False
+    assert "current git state is unavailable" in decoded["warnings"]
+
+
+def test_task_restore_plan_detects_overwritten_current_changes(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    checkpoint = task.create_checkpoint("first edit")
+    agent.files.replace_text("parser.c", "return 1;", "return 2;")
+    before = agent.files.read_text("parser.c")
+
+    plan = task.plan_restore_checkpoint(checkpoint)
+    decoded = json.loads(json.dumps(plan.as_dict()))
+    after = agent.files.read_text("parser.c")
+
+    assert plan.target_checkpoint_id == checkpoint.id
+    assert plan.files_would_be_modified == ("parser.c",)
+    assert plan.files_would_be_overwritten == ("parser.c",)
+    assert plan.safe_to_restore is False
+    assert "+    return 1;" in plan.checkpoint_diff
+    assert "+    return 2;" in plan.current_git_diff
+    assert decoded["files_would_be_modified"] == ["parser.c"]
+    assert decoded["files_would_be_overwritten"] == ["parser.c"]
+    assert before == after
 
 
 def test_task_events_are_written_to_jsonl(tmp_path) -> None:

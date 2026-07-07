@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.events import task_event
 from a100_agent_lab.sessions.session import Session
-from a100_agent_lab.tasks import Task, TaskCheckpoint, TaskReport
+from a100_agent_lab.tasks import Task, TaskCheckpoint, TaskCheckpointRestorePlan, TaskReport
 from a100_agent_lab.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -89,6 +89,7 @@ class Agent:
             _on_event=self._log_task_event,
             _reporter=self._build_task_report,
             _checkpoint_builder=self._build_task_checkpoint,
+            _restore_plan_builder=self._build_task_restore_plan,
         )
         self._tasks.append(task)
         self._current_task = task
@@ -188,6 +189,15 @@ class Agent:
             git_status=self.git.status().stdout,
             git_diff=self.git.diff().stdout,
             metadata=metadata,
+        )
+
+    def _build_task_restore_plan(self, task: Task, checkpoint: TaskCheckpoint) -> TaskCheckpointRestorePlan:
+        if not self.git.is_repo():
+            return TaskCheckpointRestorePlan.from_checkpoint(checkpoint)
+        return TaskCheckpointRestorePlan.from_checkpoint(
+            checkpoint,
+            current_git_status=self.git.status().stdout,
+            current_git_diff=self.git.diff().stdout,
         )
 
 

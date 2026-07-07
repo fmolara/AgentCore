@@ -199,6 +199,67 @@ class TaskCheckpointComparison:
         }
 
 
+@dataclass(frozen=True)
+class TaskCheckpointRestorePlan:
+    target_checkpoint_id: str
+    target_checkpoint_label: str
+    target_checkpoint_timestamp: str
+    current_git_status: str | None
+    current_git_diff: str | None
+    checkpoint_diff: str | None
+    files_would_be_modified: tuple[str, ...] = ()
+    files_would_be_overwritten: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    safe_to_restore: bool = False
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint: TaskCheckpoint,
+        *,
+        current_git_status: str | None = None,
+        current_git_diff: str | None = None,
+    ) -> "TaskCheckpointRestorePlan":
+        checkpoint_files = set(_changed_files_from_checkpoint(checkpoint))
+        current_files = set(_changed_files_from_status(current_git_status or ""))
+        current_files.update(_changed_files_from_diff(current_git_diff or ""))
+        overwritten = tuple(sorted(checkpoint_files & current_files))
+        warnings = _restore_warnings(
+            checkpoint_files=checkpoint_files,
+            overwritten=overwritten,
+            has_checkpoint_diff=bool(checkpoint.git_diff),
+            has_current_state=current_git_status is not None and current_git_diff is not None,
+        )
+        return cls(
+            target_checkpoint_id=checkpoint.id,
+            target_checkpoint_label=checkpoint.label,
+            target_checkpoint_timestamp=checkpoint.timestamp,
+            current_git_status=current_git_status,
+            current_git_diff=current_git_diff,
+            checkpoint_diff=checkpoint.git_diff,
+            files_would_be_modified=tuple(sorted(checkpoint_files)),
+            files_would_be_overwritten=overwritten,
+            warnings=warnings,
+            safe_to_restore=not warnings,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "target_checkpoint": {
+                "id": self.target_checkpoint_id,
+                "label": self.target_checkpoint_label,
+                "timestamp": self.target_checkpoint_timestamp,
+            },
+            "current_git_status": self.current_git_status,
+            "current_git_diff": self.current_git_diff,
+            "checkpoint_diff": self.checkpoint_diff,
+            "files_would_be_modified": list(self.files_would_be_modified),
+            "files_would_be_overwritten": list(self.files_would_be_overwritten),
+            "warnings": list(self.warnings),
+            "safe_to_restore": self.safe_to_restore,
+        }
+
+
 @dataclass
 class Task:
     title: str
@@ -219,6 +280,10 @@ class Task:
     _checkpoint_builder: Callable[
         ["Task", str, str | None, dict[str, Any] | None],
         TaskCheckpoint,
+    ] | None = field(default=None, repr=False, compare=False)
+    _restore_plan_builder: Callable[
+        ["Task", TaskCheckpoint],
+        TaskCheckpointRestorePlan,
     ] | None = field(default=None, repr=False, compare=False)
 
     def start(self) -> None:
@@ -315,6 +380,12 @@ class Task:
             raise ValueError("at least two checkpoints are required")
         return self.compare_checkpoints(self._checkpoints[-2], self._checkpoints[-1])
 
+    def plan_restore_checkpoint(self, checkpoint: TaskCheckpoint | str) -> TaskCheckpointRestorePlan:
+        resolved = self._resolve_checkpoint(checkpoint)
+        if self._restore_plan_builder is not None:
+            return self._restore_plan_builder(self, resolved)
+        return TaskCheckpointRestorePlan.from_checkpoint(resolved)
+
     def _require_status(self, allowed: set[TaskStatus]) -> None:
         if self.status not in allowed:
             allowed_values = ", ".join(sorted(status.value for status in allowed))
@@ -381,3 +452,22 @@ def _changed_files_from_diff(diff: str) -> tuple[str, ...]:
             path = path[2:]
         files.append(path)
     return tuple(files)
+
+
+def _restore_warnings(
+    *,
+    checkpoint_files: set[str],
+    overwritten: tuple[str, ...],
+    has_checkpoint_diff: bool,
+    has_current_state: bool,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if not has_current_state:
+        warnings.append("current git state is unavailable")
+    if not has_checkpoint_diff:
+        warnings.append("target checkpoint has no diff")
+    if not checkpoint_files:
+        warnings.append("target checkpoint does not reference changed files")
+    if overwritten:
+        warnings.append("restore would overwrite current changes in: " + ", ".join(overwritten))
+    return tuple(warnings)
