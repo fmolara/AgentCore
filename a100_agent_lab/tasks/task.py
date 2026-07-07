@@ -229,6 +229,7 @@ class TaskCheckpointRestorePlan:
             overwritten=overwritten,
             has_checkpoint_diff=bool(checkpoint.git_diff),
             has_current_state=current_git_status is not None and current_git_diff is not None,
+            has_snapshots=_has_file_snapshots(checkpoint),
         )
         return cls(
             target_checkpoint_id=checkpoint.id,
@@ -260,6 +261,28 @@ class TaskCheckpointRestorePlan:
         }
 
 
+@dataclass(frozen=True)
+class TaskCheckpointRestoreResult:
+    target_checkpoint_id: str
+    target_checkpoint_label: str
+    restored_files: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    forced: bool = False
+    safe_plan: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "target_checkpoint": {
+                "id": self.target_checkpoint_id,
+                "label": self.target_checkpoint_label,
+            },
+            "restored_files": list(self.restored_files),
+            "warnings": list(self.warnings),
+            "forced": self.forced,
+            "safe_plan": self.safe_plan,
+        }
+
+
 @dataclass
 class Task:
     title: str
@@ -284,6 +307,10 @@ class Task:
     _restore_plan_builder: Callable[
         ["Task", TaskCheckpoint],
         TaskCheckpointRestorePlan,
+    ] | None = field(default=None, repr=False, compare=False)
+    _restore_executor: Callable[
+        ["Task", TaskCheckpoint, TaskCheckpointRestorePlan, bool],
+        TaskCheckpointRestoreResult,
     ] | None = field(default=None, repr=False, compare=False)
 
     def start(self) -> None:
@@ -386,6 +413,20 @@ class Task:
             return self._restore_plan_builder(self, resolved)
         return TaskCheckpointRestorePlan.from_checkpoint(resolved)
 
+    def restore_checkpoint(
+        self,
+        checkpoint: TaskCheckpoint | str,
+        *,
+        force: bool = False,
+    ) -> TaskCheckpointRestoreResult:
+        resolved = self._resolve_checkpoint(checkpoint)
+        plan = self.plan_restore_checkpoint(resolved)
+        if not plan.safe_to_restore and not force:
+            raise ValueError("restore plan is not safe; pass force=True to override")
+        if self._restore_executor is None:
+            raise RuntimeError("checkpoint restore requires a workspace-bound task")
+        return self._restore_executor(self, resolved, plan, force)
+
     def _require_status(self, allowed: set[TaskStatus]) -> None:
         if self.status not in allowed:
             allowed_values = ", ".join(sorted(status.value for status in allowed))
@@ -460,14 +501,22 @@ def _restore_warnings(
     overwritten: tuple[str, ...],
     has_checkpoint_diff: bool,
     has_current_state: bool,
+    has_snapshots: bool,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
     if not has_current_state:
         warnings.append("current git state is unavailable")
     if not has_checkpoint_diff:
         warnings.append("target checkpoint has no diff")
+    if not has_snapshots:
+        warnings.append("target checkpoint has no restorable file snapshots")
     if not checkpoint_files:
         warnings.append("target checkpoint does not reference changed files")
     if overwritten:
         warnings.append("restore would overwrite current changes in: " + ", ".join(overwritten))
     return tuple(warnings)
+
+
+def _has_file_snapshots(checkpoint: TaskCheckpoint) -> bool:
+    snapshots = checkpoint.metadata.get("_file_snapshots")
+    return isinstance(snapshots, dict) and bool(snapshots)

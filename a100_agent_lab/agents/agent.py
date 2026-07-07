@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING, Any, Iterator
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.events import task_event
 from a100_agent_lab.sessions.session import Session
-from a100_agent_lab.tasks import Task, TaskCheckpoint, TaskCheckpointRestorePlan, TaskReport
+from a100_agent_lab.tasks import (
+    Task,
+    TaskCheckpoint,
+    TaskCheckpointRestorePlan,
+    TaskCheckpointRestoreResult,
+    TaskReport,
+)
 from a100_agent_lab.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -90,6 +96,7 @@ class Agent:
             _reporter=self._build_task_report,
             _checkpoint_builder=self._build_task_checkpoint,
             _restore_plan_builder=self._build_task_restore_plan,
+            _restore_executor=self._restore_task_checkpoint,
         )
         self._tasks.append(task)
         self._current_task = task
@@ -174,21 +181,25 @@ class Agent:
         description: str | None,
         metadata: dict[str, Any] | None,
     ) -> TaskCheckpoint:
+        checkpoint_metadata = dict(metadata or {})
         if not self.git.is_repo():
             return TaskCheckpoint.from_task(
                 task,
                 label=label,
                 description=description,
-                metadata=metadata,
+                metadata=checkpoint_metadata,
             )
+        status = self.git.status().stdout
+        diff = self.git.diff().stdout
+        checkpoint_metadata.setdefault("_file_snapshots", self._file_snapshots(status, diff))
         return TaskCheckpoint.from_task(
             task,
             label=label,
             description=description,
             git_branch=self.git.current_branch(),
-            git_status=self.git.status().stdout,
-            git_diff=self.git.diff().stdout,
-            metadata=metadata,
+            git_status=status,
+            git_diff=diff,
+            metadata=checkpoint_metadata,
         )
 
     def _build_task_restore_plan(self, task: Task, checkpoint: TaskCheckpoint) -> TaskCheckpointRestorePlan:
@@ -200,6 +211,42 @@ class Agent:
             current_git_diff=self.git.diff().stdout,
         )
 
+    def _restore_task_checkpoint(
+        self,
+        task: Task,
+        checkpoint: TaskCheckpoint,
+        plan: TaskCheckpointRestorePlan,
+        force: bool,
+    ) -> TaskCheckpointRestoreResult:
+        snapshots = checkpoint.metadata.get("_file_snapshots")
+        if not isinstance(snapshots, dict) or not snapshots:
+            raise ValueError("target checkpoint has no restorable file snapshots")
+        restored_files: list[str] = []
+        for path, content in snapshots.items():
+            if not isinstance(path, str) or not isinstance(content, str):
+                raise ValueError("target checkpoint contains invalid file snapshot metadata")
+            self.files.write_text(path, content)
+            restored_files.append(path)
+        return TaskCheckpointRestoreResult(
+            target_checkpoint_id=checkpoint.id,
+            target_checkpoint_label=checkpoint.label,
+            restored_files=tuple(sorted(restored_files)),
+            warnings=plan.warnings,
+            forced=force,
+            safe_plan=plan.safe_to_restore,
+        )
+
+    def _file_snapshots(self, status: str, diff: str) -> dict[str, str]:
+        snapshots: dict[str, str] = {}
+        files = set(_files_changed_from_status(status))
+        files.update(_files_changed_from_diff(diff))
+        for path in sorted(files):
+            try:
+                snapshots[path] = self.files.read_text(path)
+            except FileNotFoundError:
+                continue
+        return snapshots
+
 
 def _files_changed_from_status(status: str) -> tuple[str, ...]:
     files: list[str] = []
@@ -210,4 +257,19 @@ def _files_changed_from_status(status: str) -> tuple[str, ...]:
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
         files.append(path.strip())
+    return tuple(files)
+
+
+def _files_changed_from_diff(diff: str) -> tuple[str, ...]:
+    files: list[str] = []
+    for line in diff.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        path = parts[3]
+        if path.startswith("b/"):
+            path = path[2:]
+        files.append(path)
     return tuple(files)

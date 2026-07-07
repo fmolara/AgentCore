@@ -1,6 +1,14 @@
 from .agents import Agent
 from .api.client import AgentLab
-from .tasks import Task, TaskCheckpoint, TaskCheckpointComparison, TaskCheckpointRestorePlan, TaskReport, TaskStatus
+from .tasks import (
+    Task,
+    TaskCheckpoint,
+    TaskCheckpointComparison,
+    TaskCheckpointRestorePlan,
+    TaskCheckpointRestoreResult,
+    TaskReport,
+    TaskStatus,
+)
 from .workspace import Workspace
 
 __all__ = [
@@ -10,6 +18,7 @@ __all__ = [
     "TaskCheckpoint",
     "TaskCheckpointComparison",
     "TaskCheckpointRestorePlan",
+    "TaskCheckpointRestoreResult",
     "TaskReport",
     "TaskStatus",
     "Workspace",

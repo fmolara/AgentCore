@@ -3,6 +3,7 @@ from a100_agent_lab.tasks.task import (
     TaskCheckpoint,
     TaskCheckpointComparison,
     TaskCheckpointRestorePlan,
+    TaskCheckpointRestoreResult,
     TaskReport,
     TaskStatus,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "TaskCheckpoint",
     "TaskCheckpointComparison",
     "TaskCheckpointRestorePlan",
+    "TaskCheckpointRestoreResult",
     "TaskReport",
     "TaskStatus",
 ]

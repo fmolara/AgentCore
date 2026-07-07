@@ -12,6 +12,7 @@ from a100_agent_lab import (
     TaskCheckpoint,
     TaskCheckpointComparison,
     TaskCheckpointRestorePlan,
+    TaskCheckpointRestoreResult,
     TaskReport,
     TaskStatus,
 )
@@ -401,6 +402,109 @@ def test_task_restore_plan_detects_overwritten_current_changes(tmp_path, monkeyp
     assert decoded["files_would_be_modified"] == ["parser.c"]
     assert decoded["files_would_be_overwritten"] == ["parser.c"]
     assert before == after
+
+
+def test_task_restore_checkpoint_simple_file_without_force(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    checkpoint = task.create_checkpoint("return one")
+    agent.files.replace_text("parser.c", "return 1;", "return 2;")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Alternative parser")
+    commit_before_restore = agent.git.current_commit()
+
+    result = task.restore_checkpoint(checkpoint)
+    decoded = json.loads(json.dumps(result.as_dict()))
+
+    assert isinstance(result, TaskCheckpointRestoreResult)
+    assert "return 1;" in agent.files.read_text("parser.c")
+    assert result.restored_files == ("parser.c",)
+    assert result.safe_plan is True
+    assert result.forced is False
+    assert decoded["restored_files"] == ["parser.c"]
+    assert agent.git.current_commit() == commit_before_restore
+    assert "return 1;" in agent.git.diff().stdout
+
+
+def test_task_restore_checkpoint_refuses_unsafe_restore(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    checkpoint = task.create_checkpoint("return one")
+    agent.files.replace_text("parser.c", "return 1;", "return 2;")
+
+    with pytest.raises(ValueError, match="restore plan is not safe"):
+        task.restore_checkpoint(checkpoint)
+
+    assert "return 2;" in agent.files.read_text("parser.c")
+
+
+def test_task_restore_checkpoint_force_restores_unsafe_plan(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+    commit_before_restore = agent.git.current_commit()
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    checkpoint = task.create_checkpoint("return one")
+    agent.files.replace_text("parser.c", "return 1;", "return 2;")
+
+    result = task.restore_checkpoint(checkpoint, force=True)
+
+    assert "return 1;" in agent.files.read_text("parser.c")
+    assert result.restored_files == ("parser.c",)
+    assert result.safe_plan is False
+    assert result.forced is True
+    assert result.warnings
+    assert agent.git.current_commit() == commit_before_restore
+
+
+def test_task_restore_checkpoint_blocks_workspace_escape(tmp_path) -> None:
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    (agent.workspace.root / "escape.txt").symlink_to(outside)
+    task = agent.create_task(title="Bad restore")
+
+    symlink_checkpoint = TaskCheckpoint.from_task(
+        task,
+        label="symlink escape",
+        metadata={"_file_snapshots": {"escape.txt": "changed\n"}},
+    )
+    traversal_checkpoint = TaskCheckpoint.from_task(
+        task,
+        label="path traversal",
+        metadata={"_file_snapshots": {"../outside.txt": "changed\n"}},
+    )
+
+    with pytest.raises(ValueError):
+        task.restore_checkpoint(symlink_checkpoint, force=True)
+
+    with pytest.raises(ValueError):
+        task.restore_checkpoint(traversal_checkpoint, force=True)
+
+    assert outside.read_text(encoding="utf-8") == "outside\n"
 
 
 def test_task_events_are_written_to_jsonl(tmp_path) -> None:
