@@ -39,8 +39,10 @@ class Workspace:
             self.cwd.mkdir(parents=True, exist_ok=True)
         if not self.cwd.is_dir():
             raise NotADirectoryError(f"workspace cwd is not a directory: {self.cwd}")
+        from a100_agent_lab.workspace.files import FileWorkspace
         from a100_agent_lab.workspace.git import GitWorkspace
 
+        self.files = FileWorkspace(self)
         self.git = GitWorkspace(self)
 
     @property

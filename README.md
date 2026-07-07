@@ -82,6 +82,17 @@ print(agent.workspace.list("notes"))
 print(agent.workspace.read_text("notes/pointers.txt"))
 ```
 
+Safe file editing primitives are available through `agent.files`, scoped to the
+same workspace:
+
+```python
+agent.files.write_text("src/main.c", "int answer(void) { return 1; }\n")
+agent.files.replace_text("src/main.c", "return 1", "return 42")
+agent.files.append_text("README.md", "Notes from the agent.\n")
+
+print(agent.files.read_lines("src/main.c", start=0, end=1))
+```
+
 Local Git operations are also scoped to the same workspace root. No clone,
 fetch, pull, or push API is exposed:
 

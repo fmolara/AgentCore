@@ -47,6 +47,10 @@ class Agent:
         return self.workspace.git
 
     @property
+    def files(self):
+        return self.workspace.files
+
+    @property
     def last_metrics(self) -> GenerationMetrics | None:
         return None if self._last_result is None else self._last_result.metrics
 
