@@ -1,6 +1,6 @@
 from .agents import Agent
 from .api.client import AgentLab
-from .tasks import Task, TaskReport, TaskStatus
+from .tasks import Task, TaskCheckpoint, TaskReport, TaskStatus
 from .workspace import Workspace
 
-__all__ = ["Agent", "AgentLab", "Task", "TaskReport", "TaskStatus", "Workspace"]
+__all__ = ["Agent", "AgentLab", "Task", "TaskCheckpoint", "TaskReport", "TaskStatus", "Workspace"]

@@ -6,7 +6,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from a100_agent_lab import AgentLab, Task, TaskReport, TaskStatus
+from a100_agent_lab import AgentLab, Task, TaskCheckpoint, TaskReport, TaskStatus
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -144,6 +144,35 @@ def test_task_report_json_serialization() -> None:
     assert decoded["metadata"] == {"area": "parser"}
 
 
+def test_task_checkpoint_json_serialization() -> None:
+    task = Task(title="Refactor parser")
+
+    checkpoint = task.create_checkpoint(
+        "after parser edit",
+        description="Parser returns one token.",
+        metadata={"phase": "edit"},
+    )
+    encoded = json.dumps(checkpoint.as_dict())
+    decoded = json.loads(encoded)
+
+    assert isinstance(checkpoint, TaskCheckpoint)
+    assert decoded["task_id"] == task.id
+    assert decoded["label"] == "after parser edit"
+    assert decoded["description"] == "Parser returns one token."
+    assert decoded["git_branch"] is None
+    assert decoded["metadata"] == {"phase": "edit"}
+    assert task.checkpoints() == [checkpoint]
+    assert task.latest_checkpoint() is checkpoint
+    assert task.as_dict()["checkpoints"][0]["id"] == checkpoint.id
+
+
+def test_task_checkpoint_requires_label() -> None:
+    task = Task(title="Refactor parser")
+
+    with pytest.raises(ValueError):
+        task.create_checkpoint(" ")
+
+
 def test_agent_owns_tasks_and_tracks_current_task(tmp_path) -> None:
     lab = make_lab(tmp_path / "workspace")
     agent = lab.create_agent()
@@ -222,6 +251,31 @@ def test_task_report_includes_git_workspace_state(tmp_path, monkeypatch) -> None
     assert report.files_changed == ("parser.c",)
     assert decoded["files_changed"] == ["parser.c"]
     assert decoded["metadata"]["git_commit_before"] is not None
+
+
+def test_task_checkpoint_includes_git_workspace_snapshot(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    first = task.create_checkpoint("after first edit")
+    agent.files.replace_text("parser.c", "return 1;", "return 2;")
+    second = task.create_checkpoint("after second edit")
+
+    assert first.task_id == task.id
+    assert first.git_branch is not None
+    assert "+    return 1;" in first.git_diff
+    assert "+    return 2;" not in first.git_diff
+    assert second.git_branch == first.git_branch
+    assert "+    return 2;" in second.git_diff
+    assert task.checkpoints() == [first, second]
+    assert task.latest_checkpoint() is second
 
 
 def test_task_events_are_written_to_jsonl(tmp_path) -> None:

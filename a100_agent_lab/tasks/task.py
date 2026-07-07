@@ -84,6 +84,57 @@ class TaskReport:
         }
 
 
+@dataclass(frozen=True)
+class TaskCheckpoint:
+    id: str
+    task_id: str
+    timestamp: str
+    label: str
+    description: str | None = None
+    git_branch: str | None = None
+    git_status: str | None = None
+    git_diff: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_task(
+        cls,
+        task: "Task",
+        *,
+        label: str,
+        description: str | None = None,
+        git_branch: str | None = None,
+        git_status: str | None = None,
+        git_diff: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
+    ) -> "TaskCheckpoint":
+        return cls(
+            id=uuid4().hex,
+            task_id=task.id,
+            timestamp=(timestamp or task._now()).isoformat(),
+            label=label,
+            description=description,
+            git_branch=git_branch,
+            git_status=git_status,
+            git_diff=git_diff,
+            metadata=dict(metadata or {}),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "task_id": self.task_id,
+            "timestamp": self.timestamp,
+            "label": self.label,
+            "description": self.description,
+            "git_branch": self.git_branch,
+            "git_status": self.git_status,
+            "git_diff": self.git_diff,
+            "metadata": dict(self.metadata),
+        }
+
+
 @dataclass
 class Task:
     title: str
@@ -98,8 +149,13 @@ class Task:
     failed_at: datetime | None = None
     cancelled_at: datetime | None = None
     failure_reason: str | None = None
+    _checkpoints: list[TaskCheckpoint] = field(default_factory=list, repr=False)
     _on_event: Callable[["Task", str], None] | None = field(default=None, repr=False, compare=False)
     _reporter: Callable[["Task"], TaskReport] | None = field(default=None, repr=False, compare=False)
+    _checkpoint_builder: Callable[
+        ["Task", str, str | None, dict[str, Any] | None],
+        TaskCheckpoint,
+    ] | None = field(default=None, repr=False, compare=False)
 
     def start(self) -> None:
         self._require_status({TaskStatus.CREATED})
@@ -150,6 +206,7 @@ class Task:
             "cancelled_at": None if self.cancelled_at is None else self.cancelled_at.isoformat(),
             "failure_reason": self.failure_reason,
             "metadata": dict(self.metadata),
+            "checkpoints": [checkpoint.as_dict() for checkpoint in self._checkpoints],
         }
 
     def report(self) -> TaskReport:
@@ -157,10 +214,42 @@ class Task:
             return self._reporter(self)
         return TaskReport.from_task(self)
 
+    def create_checkpoint(
+        self,
+        label: str,
+        description: str | None = None,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> TaskCheckpoint:
+        if not label.strip():
+            raise ValueError("checkpoint label must not be empty")
+        checkpoint = self._build_checkpoint(label, description, metadata)
+        self._checkpoints.append(checkpoint)
+        self.updated_at = datetime.fromisoformat(checkpoint.timestamp)
+        return checkpoint
+
+    def checkpoints(self) -> list[TaskCheckpoint]:
+        return list(self._checkpoints)
+
+    def latest_checkpoint(self) -> TaskCheckpoint | None:
+        if not self._checkpoints:
+            return None
+        return self._checkpoints[-1]
+
     def _require_status(self, allowed: set[TaskStatus]) -> None:
         if self.status not in allowed:
             allowed_values = ", ".join(sorted(status.value for status in allowed))
             raise ValueError(f"cannot transition task from {self.status.value}; expected one of: {allowed_values}")
+
+    def _build_checkpoint(
+        self,
+        label: str,
+        description: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> TaskCheckpoint:
+        if self._checkpoint_builder is not None:
+            return self._checkpoint_builder(self, label, description, metadata)
+        return TaskCheckpoint.from_task(self, label=label, description=description, metadata=metadata)
 
     def _emit(self, event_type: str) -> None:
         if self._on_event is not None:
