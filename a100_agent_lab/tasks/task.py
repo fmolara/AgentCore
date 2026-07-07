@@ -135,6 +135,70 @@ class TaskCheckpoint:
         }
 
 
+@dataclass(frozen=True)
+class TaskCheckpointComparison:
+    checkpoint_a_id: str
+    checkpoint_a_label: str
+    checkpoint_a_timestamp: str
+    checkpoint_b_id: str
+    checkpoint_b_label: str
+    checkpoint_b_timestamp: str
+    diff_a: str | None
+    diff_b: str | None
+    changed_files_a: tuple[str, ...] = ()
+    changed_files_b: tuple[str, ...] = ()
+    files_added: tuple[str, ...] = ()
+    files_removed: tuple[str, ...] = ()
+    files_changed: tuple[str, ...] = ()
+
+    @classmethod
+    def from_checkpoints(
+        cls,
+        checkpoint_a: TaskCheckpoint,
+        checkpoint_b: TaskCheckpoint,
+    ) -> "TaskCheckpointComparison":
+        changed_a = _changed_files_from_checkpoint(checkpoint_a)
+        changed_b = _changed_files_from_checkpoint(checkpoint_b)
+        files_a = set(changed_a)
+        files_b = set(changed_b)
+        return cls(
+            checkpoint_a_id=checkpoint_a.id,
+            checkpoint_a_label=checkpoint_a.label,
+            checkpoint_a_timestamp=checkpoint_a.timestamp,
+            checkpoint_b_id=checkpoint_b.id,
+            checkpoint_b_label=checkpoint_b.label,
+            checkpoint_b_timestamp=checkpoint_b.timestamp,
+            diff_a=checkpoint_a.git_diff,
+            diff_b=checkpoint_b.git_diff,
+            changed_files_a=changed_a,
+            changed_files_b=changed_b,
+            files_added=tuple(sorted(files_b - files_a)),
+            files_removed=tuple(sorted(files_a - files_b)),
+            files_changed=tuple(sorted(files_a & files_b)),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "checkpoint_a": {
+                "id": self.checkpoint_a_id,
+                "label": self.checkpoint_a_label,
+                "timestamp": self.checkpoint_a_timestamp,
+            },
+            "checkpoint_b": {
+                "id": self.checkpoint_b_id,
+                "label": self.checkpoint_b_label,
+                "timestamp": self.checkpoint_b_timestamp,
+            },
+            "diff_a": self.diff_a,
+            "diff_b": self.diff_b,
+            "changed_files_a": list(self.changed_files_a),
+            "changed_files_b": list(self.changed_files_b),
+            "files_added": list(self.files_added),
+            "files_removed": list(self.files_removed),
+            "files_changed": list(self.files_changed),
+        }
+
+
 @dataclass
 class Task:
     title: str
@@ -236,10 +300,35 @@ class Task:
             return None
         return self._checkpoints[-1]
 
+    def compare_checkpoints(
+        self,
+        checkpoint_a: TaskCheckpoint | str,
+        checkpoint_b: TaskCheckpoint | str,
+    ) -> TaskCheckpointComparison:
+        return TaskCheckpointComparison.from_checkpoints(
+            self._resolve_checkpoint(checkpoint_a),
+            self._resolve_checkpoint(checkpoint_b),
+        )
+
+    def compare_latest_checkpoint(self) -> TaskCheckpointComparison:
+        if len(self._checkpoints) < 2:
+            raise ValueError("at least two checkpoints are required")
+        return self.compare_checkpoints(self._checkpoints[-2], self._checkpoints[-1])
+
     def _require_status(self, allowed: set[TaskStatus]) -> None:
         if self.status not in allowed:
             allowed_values = ", ".join(sorted(status.value for status in allowed))
             raise ValueError(f"cannot transition task from {self.status.value}; expected one of: {allowed_values}")
+
+    def _resolve_checkpoint(self, checkpoint: TaskCheckpoint | str) -> TaskCheckpoint:
+        if isinstance(checkpoint, TaskCheckpoint):
+            if checkpoint.task_id != self.id:
+                raise ValueError("checkpoint belongs to a different task")
+            return checkpoint
+        for existing in self._checkpoints:
+            if existing.id == checkpoint:
+                return existing
+        raise ValueError(f"unknown checkpoint id: {checkpoint}")
 
     def _build_checkpoint(
         self,
@@ -258,3 +347,37 @@ class Task:
     @staticmethod
     def _now() -> datetime:
         return datetime.now(timezone.utc)
+
+
+def _changed_files_from_checkpoint(checkpoint: TaskCheckpoint) -> tuple[str, ...]:
+    files = set(_changed_files_from_status(checkpoint.git_status or ""))
+    files.update(_changed_files_from_diff(checkpoint.git_diff or ""))
+    return tuple(sorted(files))
+
+
+def _changed_files_from_status(status: str) -> tuple[str, ...]:
+    files: list[str] = []
+    for line in status.splitlines():
+        if not line:
+            continue
+        path = line[3:] if len(line) > 3 else line
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path:
+            files.append(path.strip())
+    return tuple(files)
+
+
+def _changed_files_from_diff(diff: str) -> tuple[str, ...]:
+    files: list[str] = []
+    for line in diff.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        path = parts[3]
+        if path.startswith("b/"):
+            path = path[2:]
+        files.append(path)
+    return tuple(files)

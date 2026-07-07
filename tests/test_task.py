@@ -6,7 +6,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from a100_agent_lab import AgentLab, Task, TaskCheckpoint, TaskReport, TaskStatus
+from a100_agent_lab import AgentLab, Task, TaskCheckpoint, TaskCheckpointComparison, TaskReport, TaskStatus
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -276,6 +276,77 @@ def test_task_checkpoint_includes_git_workspace_snapshot(tmp_path, monkeypatch) 
     assert "+    return 2;" in second.git_diff
     assert task.checkpoints() == [first, second]
     assert task.latest_checkpoint() is second
+
+
+def test_task_compare_checkpoints_json_serialization(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.files.write_text("lexer.c", "int lex(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c", "lexer.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    first = task.create_checkpoint("first edit")
+    agent.files.replace_text("lexer.c", "return 0;", "return 1;")
+    second = task.create_checkpoint("second edit")
+
+    comparison = task.compare_checkpoints(first, second)
+    encoded = json.dumps(comparison.as_dict())
+    decoded = json.loads(encoded)
+
+    assert isinstance(comparison, TaskCheckpointComparison)
+    assert decoded["checkpoint_a"]["id"] == first.id
+    assert decoded["checkpoint_b"]["id"] == second.id
+    assert decoded["changed_files_a"] == ["parser.c"]
+    assert decoded["changed_files_b"] == ["lexer.c", "parser.c"]
+    assert decoded["files_added"] == ["lexer.c"]
+    assert decoded["files_removed"] == []
+    assert decoded["files_changed"] == ["parser.c"]
+    assert "+    return 1;" in decoded["diff_a"]
+    assert "lexer.c" in decoded["diff_b"]
+
+
+def test_task_compare_latest_checkpoint_and_checkpoint_ids(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+    first = task.create_checkpoint("first edit")
+    agent.files.replace_text("parser.c", "return 1;", "return 2;")
+    second = task.create_checkpoint("second edit")
+
+    latest = task.compare_latest_checkpoint()
+    by_id = task.compare_checkpoints(first.id, second.id)
+
+    assert latest.checkpoint_a_id == first.id
+    assert latest.checkpoint_b_id == second.id
+    assert by_id.checkpoint_a_label == "first edit"
+    assert by_id.checkpoint_b_label == "second edit"
+
+
+def test_task_compare_checkpoint_validation() -> None:
+    task = Task(title="Refactor parser")
+    other = Task(title="Other")
+    checkpoint = other.create_checkpoint("other checkpoint")
+
+    with pytest.raises(ValueError):
+        task.compare_latest_checkpoint()
+
+    with pytest.raises(ValueError):
+        task.compare_checkpoints(checkpoint, checkpoint)
+
+    with pytest.raises(ValueError):
+        task.compare_checkpoints("missing", "also-missing")
 
 
 def test_task_events_are_written_to_jsonl(tmp_path) -> None:
