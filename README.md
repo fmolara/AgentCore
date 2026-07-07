@@ -108,6 +108,21 @@ agent.git.commit("Add pointer notes")
 print(agent.git.log(limit=3).stdout)
 ```
 
+Tasks are execution containers owned by an agent. They track status and metadata
+but do not perform planning or tool calling:
+
+```python
+task = agent.create_task(
+    title="Refactor parser",
+    description="Replace placeholder token parsing logic.",
+)
+
+task.start()
+agent.files.replace_text("src/parser.c", "return 0;", "return 1;")
+print(agent.git.diff().stdout)
+task.complete()
+```
+
 Multiple independent sessions can be managed by id:
 
 ```python

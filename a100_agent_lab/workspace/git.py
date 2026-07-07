@@ -72,6 +72,13 @@ class GitWorkspace:
         branch = result.stdout.strip()
         return branch or None
 
+    def current_commit(self) -> str | None:
+        result = self._run(["rev-parse", "HEAD"], check=False)
+        if not result.ok:
+            return None
+        commit = result.stdout.strip()
+        return commit or None
+
     def _relative_path(self, path: str | Path) -> str:
         resolved = self.workspace._resolve(path)
         return resolved.relative_to(self.workspace.root).as_posix()

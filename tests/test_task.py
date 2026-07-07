@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Iterator
+
+import pytest
+
+from a100_agent_lab import AgentLab, Task, TaskStatus
+from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
+from a100_agent_lab.logging.writer import JsonlWriter
+from a100_agent_lab.runtime.base import Runtime
+from a100_agent_lab.sessions import Session, SessionStore
+
+
+class FakeRuntime(Runtime):
+    def __init__(self, log_writer: JsonlWriter | None = None) -> None:
+        self.loaded = False
+        self.log_writer = log_writer
+
+    def load(self) -> None:
+        self.loaded = True
+
+    def shutdown(self) -> None:
+        self.loaded = False
+
+    def ready(self) -> bool:
+        return self.loaded
+
+    def health(self) -> dict[str, Any]:
+        return {"runtime_name": "fake", "ready": self.ready()}
+
+    def statistics(self) -> dict[str, Any]:
+        return self.health()
+
+    def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
+        session = self.create_session()
+        return self.generate(session, prompt or "warmup", max_tokens=max_tokens)
+
+    def create_session(self, *, system_prompt: str | None = None) -> Session:
+        return Session(system_prompt=system_prompt)
+
+    def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
+        session.add_user_message(prompt)
+        session.add_assistant_message("ok")
+        return GenerationResult(
+            text="ok",
+            metrics=GenerationMetrics(
+                prompt_tokens=1,
+                generated_tokens=1,
+                ttft_sec=0.01,
+                tokens_per_sec=10.0,
+                wall_sec=0.1,
+            ),
+        )
+
+    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[str]:
+        yield self.generate(session, prompt, **kwargs).text
+
+    def tokenize(self, text_or_messages: Any) -> int:
+        return 1
+
+
+def make_lab(workspace_root: Path, *, log_writer: JsonlWriter | None = None) -> AgentLab:
+    lab = AgentLab.__new__(AgentLab)
+    lab.config = {"runtime": "fake", "workspace": {"root": str(workspace_root)}}
+    lab.project_root = workspace_root.parent
+    lab.runtime = FakeRuntime(log_writer=log_writer)
+    lab.sessions = SessionStore(lab.runtime.create_session)
+    return lab
+
+
+def set_test_git_identity(monkeypatch) -> None:
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "AgentCore Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "agentcore-test@example.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "AgentCore Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "agentcore-test@example.invalid")
+
+
+def test_task_lifecycle() -> None:
+    task = Task(title="Refactor parser", description="Replace strtok.")
+
+    assert task.status == TaskStatus.CREATED
+    assert task.started_at is None
+
+    task.start()
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.started_at is not None
+
+    task.complete()
+
+    assert task.status == TaskStatus.COMPLETED
+    assert task.completed_at is not None
+
+
+def test_task_fail_cancel_and_invalid_transitions() -> None:
+    failed = Task(title="Failing task")
+    failed.start()
+    failed.fail("parser regression")
+
+    assert failed.status == TaskStatus.FAILED
+    assert failed.failure_reason == "parser regression"
+
+    cancelled = Task(title="Cancelled task")
+    cancelled.cancel()
+    assert cancelled.status == TaskStatus.CANCELLED
+
+    with pytest.raises(ValueError):
+        cancelled.start()
+
+    with pytest.raises(ValueError):
+        Task(title="bad").fail(" ")
+
+
+def test_task_json_serialization() -> None:
+    task = Task(title="Refactor parser", description="Replace strtok.", metadata={"area": "parser"})
+    task.start()
+
+    encoded = json.dumps(task.as_dict())
+    decoded = json.loads(encoded)
+
+    assert decoded["id"] == task.id
+    assert decoded["title"] == "Refactor parser"
+    assert decoded["status"] == "running"
+    assert decoded["metadata"] == {"area": "parser"}
+    assert decoded["started_at"] is not None
+
+
+def test_agent_owns_tasks_and_tracks_current_task(tmp_path) -> None:
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+
+    task = agent.create_task(title="Refactor parser", description="Replace strtok.")
+
+    assert agent.tasks() == [task]
+    assert agent.current_task() is task
+    assert task.metadata["workspace"]["root"] == str(tmp_path / "workspace")
+    assert task.metadata["git_commit_before"] is None
+
+    task.start()
+    assert agent.current_task() is task
+
+    task.complete()
+    assert agent.current_task() is None
+    assert agent.statistics()["tasks"]["count"] == 1
+
+
+def test_task_git_commit_metadata(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("note.txt", "before\n")
+    agent.git.add(["note.txt"])
+    agent.git.commit("Before task")
+    before = agent.git.current_commit()
+
+    task = agent.create_task(title="Update note")
+
+    agent.files.write_text("note.txt", "after\n")
+    agent.git.add(["note.txt"])
+    agent.git.commit("After task")
+    after = agent.git.current_commit()
+    task.complete()
+
+    assert task.metadata["git_commit_before"] == before
+    assert task.metadata["git_commit_after"] == after
+
+
+def test_task_events_are_written_to_jsonl(tmp_path) -> None:
+    writer = JsonlWriter(tmp_path / "events.jsonl")
+    lab = make_lab(tmp_path / "workspace", log_writer=writer)
+    agent = lab.create_agent()
+
+    task = agent.create_task(title="Edit file")
+    task.start()
+    task.complete()
+
+    events = [json.loads(line) for line in writer.path.read_text(encoding="utf-8").splitlines()]
+
+    assert [event["event_type"] for event in events] == [
+        "task_created",
+        "task_started",
+        "task_completed",
+    ]
+    assert all(event["task"]["id"] == task.id for event in events)
+    assert events[-1]["task"]["status"] == "completed"

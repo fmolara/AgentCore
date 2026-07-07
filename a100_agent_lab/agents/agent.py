@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
+from a100_agent_lab.logging.events import task_event
 from a100_agent_lab.sessions.session import Session
+from a100_agent_lab.tasks import Task
 from a100_agent_lab.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -37,6 +39,8 @@ class Agent:
         self._last_result: GenerationResult | None = None
         self._total_prompt_tokens = 0
         self._total_generated_tokens = 0
+        self._tasks: list[Task] = []
+        self._current_task: Task | None = None
 
     @property
     def runtime(self):
@@ -70,6 +74,31 @@ class Agent:
         self._total_prompt_tokens = 0
         self._total_generated_tokens = 0
 
+    def create_task(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> Task:
+        task_metadata = self._task_metadata(metadata)
+        task = Task(
+            title=title,
+            description=description,
+            metadata=task_metadata,
+            _on_event=self._log_task_event,
+        )
+        self._tasks.append(task)
+        self._current_task = task
+        self._log_task_event(task, "task_created")
+        return task
+
+    def tasks(self) -> list[Task]:
+        return list(self._tasks)
+
+    def current_task(self) -> Task | None:
+        return self._current_task
+
     def statistics(self) -> dict[str, Any]:
         metrics = self.last_metrics
         return {
@@ -82,6 +111,10 @@ class Agent:
             "last_wall_sec": None if metrics is None else metrics.wall_sec,
             "generation_options": dict(self.generation_options),
             "workspace": self.workspace.as_dict(),
+            "tasks": {
+                "count": len(self._tasks),
+                "current_task_id": None if self._current_task is None else self._current_task.id,
+            },
         }
 
     def _merged_options(self, overrides: dict[str, Any]) -> dict[str, Any]:
@@ -93,3 +126,24 @@ class Agent:
         self._last_result = result
         self._total_prompt_tokens += result.metrics.prompt_tokens
         self._total_generated_tokens += result.metrics.generated_tokens
+
+    def _task_metadata(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        task_metadata = dict(metadata or {})
+        task_metadata.setdefault("workspace", self.workspace.as_dict())
+        if self.git.is_repo():
+            task_metadata.setdefault("git_commit_before", self.git.current_commit())
+        else:
+            task_metadata.setdefault("git_commit_before", None)
+        task_metadata.setdefault("git_commit_after", None)
+        return task_metadata
+
+    def _log_task_event(self, task: Task, event_type: str) -> None:
+        if event_type in {"task_completed", "task_failed", "task_cancelled"} and self.git.is_repo():
+            task.metadata["git_commit_after"] = self.git.current_commit()
+        if event_type in {"task_completed", "task_failed", "task_cancelled"}:
+            self._current_task = None if self._current_task is task else self._current_task
+        writer = getattr(self.lab.runtime, "log_writer", None)
+        if writer is None:
+            return
+        runtime_name = self.lab.statistics().get("runtime_name", "unknown")
+        writer.write(task_event(runtime_name, self.session, task, event_type=event_type))
