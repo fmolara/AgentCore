@@ -172,4 +172,5 @@ Milestone 1 architecture documents:
 
 - [Core Platform](docs/architecture/CORE_PLATFORM.md)
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
+- [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [Roadmap](docs/architecture/ROADMAP.md)
