@@ -6,7 +6,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from a100_agent_lab import AgentLab, Task, TaskStatus
+from a100_agent_lab import AgentLab, Task, TaskReport, TaskStatus
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -127,6 +127,23 @@ def test_task_json_serialization() -> None:
     assert decoded["started_at"] is not None
 
 
+def test_task_report_json_serialization() -> None:
+    task = Task(title="Refactor parser", description="Replace strtok.", metadata={"area": "parser"})
+    task.start()
+
+    report = task.report()
+    encoded = json.dumps(report.as_dict())
+    decoded = json.loads(encoded)
+
+    assert isinstance(report, TaskReport)
+    assert decoded["id"] == task.id
+    assert decoded["title"] == "Refactor parser"
+    assert decoded["status"] == "running"
+    assert decoded["git_branch"] is None
+    assert decoded["files_changed"] == []
+    assert decoded["metadata"] == {"area": "parser"}
+
+
 def test_agent_owns_tasks_and_tracks_current_task(tmp_path) -> None:
     lab = make_lab(tmp_path / "workspace")
     agent = lab.create_agent()
@@ -144,6 +161,21 @@ def test_agent_owns_tasks_and_tracks_current_task(tmp_path) -> None:
     task.complete()
     assert agent.current_task() is None
     assert agent.statistics()["tasks"]["count"] == 1
+
+
+def test_agent_current_task_report(tmp_path) -> None:
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    task = agent.create_task(title="Edit file")
+
+    report = agent.current_task_report()
+
+    assert report is not None
+    assert report.id == task.id
+    assert report.status == "created"
+
+    task.complete()
+    assert agent.current_task_report() is None
 
 
 def test_task_git_commit_metadata(tmp_path, monkeypatch) -> None:
@@ -166,6 +198,30 @@ def test_task_git_commit_metadata(tmp_path, monkeypatch) -> None:
 
     assert task.metadata["git_commit_before"] == before
     assert task.metadata["git_commit_after"] == after
+
+
+def test_task_report_includes_git_workspace_state(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    lab = make_lab(tmp_path / "workspace")
+    agent = lab.create_agent()
+    agent.git.init()
+    agent.files.write_text("parser.c", "int parse(void) {\n    return 0;\n}\n")
+    agent.git.add(["parser.c"])
+    agent.git.commit("Initial parser")
+
+    task = agent.create_task(title="Refactor parser")
+    agent.files.replace_text("parser.c", "return 0;", "return 1;")
+
+    report = task.report()
+    encoded = json.dumps(report.as_dict())
+    decoded = json.loads(encoded)
+
+    assert report.git_branch is not None
+    assert "parser.c" in report.git_status
+    assert "+    return 1;" in report.git_diff
+    assert report.files_changed == ("parser.c",)
+    assert decoded["files_changed"] == ["parser.c"]
+    assert decoded["metadata"]["git_commit_before"] is not None
 
 
 def test_task_events_are_written_to_jsonl(tmp_path) -> None:

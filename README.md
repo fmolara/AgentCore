@@ -119,7 +119,7 @@ task = agent.create_task(
 
 task.start()
 agent.files.replace_text("src/parser.c", "return 0;", "return 1;")
-print(agent.git.diff().stdout)
+print(task.report().as_dict())
 task.complete()
 ```
 

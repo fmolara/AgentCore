@@ -1,3 +1,3 @@
-from a100_agent_lab.tasks.task import Task, TaskStatus
+from a100_agent_lab.tasks.task import Task, TaskReport, TaskStatus
 
-__all__ = ["Task", "TaskStatus"]
+__all__ = ["Task", "TaskReport", "TaskStatus"]

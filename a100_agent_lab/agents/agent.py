@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.events import task_event
 from a100_agent_lab.sessions.session import Session
-from a100_agent_lab.tasks import Task
+from a100_agent_lab.tasks import Task, TaskReport
 from a100_agent_lab.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -87,6 +87,7 @@ class Agent:
             description=description,
             metadata=task_metadata,
             _on_event=self._log_task_event,
+            _reporter=self._build_task_report,
         )
         self._tasks.append(task)
         self._current_task = task
@@ -98,6 +99,10 @@ class Agent:
 
     def current_task(self) -> Task | None:
         return self._current_task
+
+    def current_task_report(self) -> TaskReport | None:
+        task = self.current_task()
+        return None if task is None else task.report()
 
     def statistics(self) -> dict[str, Any]:
         metrics = self.last_metrics
@@ -147,3 +152,27 @@ class Agent:
             return
         runtime_name = self.lab.statistics().get("runtime_name", "unknown")
         writer.write(task_event(runtime_name, self.session, task, event_type=event_type))
+
+    def _build_task_report(self, task: Task) -> TaskReport:
+        if not self.git.is_repo():
+            return TaskReport.from_task(task)
+        status = self.git.status().stdout
+        return TaskReport.from_task(
+            task,
+            git_branch=self.git.current_branch(),
+            git_status=status,
+            git_diff=self.git.diff().stdout,
+            files_changed=_files_changed_from_status(status),
+        )
+
+
+def _files_changed_from_status(status: str) -> tuple[str, ...]:
+    files: list[str] = []
+    for line in status.splitlines():
+        if not line:
+            continue
+        path = line[3:] if len(line) > 3 else line
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        files.append(path.strip())
+    return tuple(files)
