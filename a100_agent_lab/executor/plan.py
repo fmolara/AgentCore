@@ -20,6 +20,37 @@ from a100_agent_lab.executor.actions import (
     WriteFileAction,
 )
 
+READONLY_ACTION_TYPES = frozenset({"read_file", "git_status", "git_diff", "task_report"})
+MUTATING_ACTION_TYPES = frozenset({"write_file", "replace_text", "create_checkpoint"})
+GIT_ACTION_TYPES = frozenset({"git_status", "git_diff"})
+
+
+@dataclass(frozen=True)
+class ApprovalPolicy:
+    auto_approve_readonly: bool = True
+    require_approval_for_write: bool = True
+    require_approval_for_git: bool = False
+    allowed_action_types: frozenset[str] | None = None
+    denied_action_types: frozenset[str] = frozenset()
+
+    @classmethod
+    def default(cls) -> "ApprovalPolicy":
+        return cls()
+
+
+@dataclass(frozen=True)
+class ApprovalRequirement:
+    action_index: int
+    action_type: str
+    reason: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "action_index": self.action_index,
+            "action_type": self.action_type,
+            "reason": self.reason,
+        }
+
 
 @dataclass(frozen=True)
 class ActionPlan:
@@ -80,6 +111,57 @@ class ActionPlan:
             plan_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         else:
             plan_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def required_approvals(self, policy: ApprovalPolicy | None = None) -> tuple[ApprovalRequirement, ...]:
+        policy = policy or ApprovalPolicy.default()
+        requirements: list[ApprovalRequirement] = []
+        for index, action in enumerate(self.actions):
+            action_type = action.action_type
+            if policy.allowed_action_types is not None and action_type not in policy.allowed_action_types:
+                requirements.append(
+                    ApprovalRequirement(
+                        action_index=index,
+                        action_type=action_type,
+                        reason="action type is not allowed by policy",
+                    )
+                )
+                continue
+            if action_type in policy.denied_action_types:
+                requirements.append(
+                    ApprovalRequirement(
+                        action_index=index,
+                        action_type=action_type,
+                        reason="action type is denied by policy",
+                    )
+                )
+                continue
+            if action_type in MUTATING_ACTION_TYPES and policy.require_approval_for_write:
+                requirements.append(
+                    ApprovalRequirement(
+                        action_index=index,
+                        action_type=action_type,
+                        reason="mutating action requires approval",
+                    )
+                )
+                continue
+            if action_type in GIT_ACTION_TYPES and policy.require_approval_for_git:
+                requirements.append(
+                    ApprovalRequirement(
+                        action_index=index,
+                        action_type=action_type,
+                        reason="git action requires approval",
+                    )
+                )
+                continue
+            if action_type in READONLY_ACTION_TYPES and not policy.auto_approve_readonly:
+                requirements.append(
+                    ApprovalRequirement(
+                        action_index=index,
+                        action_type=action_type,
+                        reason="readonly action requires approval",
+                    )
+                )
+        return tuple(requirements)
 
 
 def action_from_dict(data: dict[str, Any]) -> Action:

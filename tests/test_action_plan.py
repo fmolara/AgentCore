@@ -5,7 +5,7 @@ from typing import Any, Iterator
 
 import pytest
 
-from a100_agent_lab import ActionPlan, AgentLab, TaskExecutor
+from a100_agent_lab import ActionPlan, AgentLab, ApprovalPolicy, TaskExecutor
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.runtime.base import Runtime
 from a100_agent_lab.sessions import Session, SessionStore
@@ -135,7 +135,7 @@ def test_task_executor_executes_valid_action_plan(tmp_path, monkeypatch) -> None
     plan = ActionPlan.from_dict(plan_data())
     task = agent.create_task(title=plan.title, description=plan.description)
 
-    result = TaskExecutor(agent).execute_plan(task, plan)
+    result = TaskExecutor(agent).execute_plan(task, plan, approved=True)
 
     assert result.status == "completed"
     assert task.status == "completed"
@@ -151,7 +151,6 @@ def test_action_plan_path_traversal_is_rejected_during_execution(tmp_path, monke
             "title": "Bad path",
             "actions": [
                 {"type": "read_file", "path": "../outside.txt"},
-                {"type": "write_file", "path": "after.txt", "content": "must not run\n"},
             ],
         }
     )
@@ -162,4 +161,94 @@ def test_action_plan_path_traversal_is_rejected_during_execution(tmp_path, monke
     assert result.status == "failed"
     assert task.status == "failed"
     assert "path escapes workspace root" in result.error
-    assert agent.workspace.exists("after.txt") is False
+
+
+def test_readonly_action_plan_runs_without_approval(tmp_path, monkeypatch) -> None:
+    agent = prepare_agent(tmp_path, monkeypatch)
+    plan = ActionPlan.from_dict(
+        {
+            "title": "Inspect parser",
+            "actions": [
+                {"type": "read_file", "path": "parser.c"},
+                {"type": "git_status"},
+                {"type": "git_diff"},
+                {"type": "task_report"},
+            ],
+        }
+    )
+    task = agent.create_task(title=plan.title)
+
+    result = TaskExecutor(agent).execute_plan(task, plan)
+
+    assert plan.required_approvals() == ()
+    assert result.status == "completed"
+    assert task.status == "completed"
+
+
+def test_mutating_action_plan_requires_approval_by_default(tmp_path, monkeypatch) -> None:
+    agent = prepare_agent(tmp_path, monkeypatch)
+    plan = ActionPlan.from_dict(plan_data())
+    task = agent.create_task(title=plan.title)
+
+    requirements = plan.required_approvals()
+    result = TaskExecutor(agent).execute_plan(task, plan)
+
+    assert [requirement.action_type for requirement in requirements] == ["create_checkpoint", "replace_text"]
+    assert result.status == "approval_required"
+    assert "mutating action requires approval" in result.error
+    assert task.status == "created"
+    assert "return 0;" in agent.files.read_text("parser.c")
+
+
+def test_approved_mutating_action_plan_runs(tmp_path, monkeypatch) -> None:
+    agent = prepare_agent(tmp_path, monkeypatch)
+    plan = ActionPlan.from_dict(plan_data())
+    task = agent.create_task(title=plan.title)
+
+    result = TaskExecutor(agent).execute_plan(task, plan, approved=True)
+
+    assert result.status == "completed"
+    assert task.status == "completed"
+    assert "return 1;" in agent.files.read_text("parser.c")
+
+
+def test_denied_action_type_is_rejected_by_policy(tmp_path, monkeypatch) -> None:
+    agent = prepare_agent(tmp_path, monkeypatch)
+    plan = ActionPlan.from_dict({"title": "Inspect parser", "actions": [{"type": "read_file", "path": "parser.c"}]})
+    policy = ApprovalPolicy(denied_action_types=frozenset({"read_file"}))
+    task = agent.create_task(title=plan.title)
+
+    requirements = plan.required_approvals(policy)
+    result = TaskExecutor(agent).execute_plan(task, plan, approval_policy=policy)
+
+    assert requirements[0].as_dict() == {
+        "action_index": 0,
+        "action_type": "read_file",
+        "reason": "action type is denied by policy",
+    }
+    assert result.status == "approval_required"
+    assert task.status == "created"
+
+
+def test_allowed_action_type_allowlist_is_enforced(tmp_path, monkeypatch) -> None:
+    agent = prepare_agent(tmp_path, monkeypatch)
+    plan = ActionPlan.from_dict(
+        {
+            "title": "Inspect parser",
+            "actions": [
+                {"type": "read_file", "path": "parser.c"},
+                {"type": "git_diff"},
+            ],
+        }
+    )
+    policy = ApprovalPolicy(allowed_action_types=frozenset({"read_file"}))
+    task = agent.create_task(title=plan.title)
+
+    requirements = plan.required_approvals(policy)
+    result = TaskExecutor(agent).execute_plan(task, plan, approval_policy=policy)
+
+    assert len(requirements) == 1
+    assert requirements[0].action_type == "git_diff"
+    assert requirements[0].reason == "action type is not allowed by policy"
+    assert result.status == "approval_required"
+    assert task.status == "created"

@@ -9,7 +9,7 @@ from a100_agent_lab.tasks import Task, TaskReport, TaskStatus
 
 if TYPE_CHECKING:
     from a100_agent_lab.agents import Agent
-    from a100_agent_lab.executor.plan import ActionPlan
+    from a100_agent_lab.executor.plan import ActionPlan, ApprovalPolicy
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,27 @@ class TaskExecutor:
             report=task.report(),
         )
 
-    def execute_plan(self, task: Task, plan: ActionPlan) -> TaskExecutionResult:
+    def execute_plan(
+        self,
+        task: Task,
+        plan: ActionPlan,
+        *,
+        approval_policy: ApprovalPolicy | None = None,
+        approved: bool = False,
+    ) -> TaskExecutionResult:
+        required = plan.required_approvals(approval_policy)
+        if required and not approved:
+            reasons = "; ".join(
+                f"action {requirement.action_index} ({requirement.action_type}): {requirement.reason}"
+                for requirement in required
+            )
+            return TaskExecutionResult(
+                task_id=task.id,
+                status="approval_required",
+                actions=(),
+                report=task.report(),
+                error="action plan requires approval: " + reasons,
+            )
         return self.execute(task, plan.actions)
 
     def _record_action(self, task: Task, result: ActionResult) -> None:

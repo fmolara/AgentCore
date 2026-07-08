@@ -2,6 +2,8 @@ from .agents import Agent
 from .api.client import AgentLab
 from .executor import (
     ActionPlan,
+    ApprovalPolicy,
+    ApprovalRequirement,
     CreateCheckpointAction,
     GitDiffAction,
     GitStatusAction,
@@ -27,6 +29,8 @@ __all__ = [
     "Agent",
     "AgentLab",
     "ActionPlan",
+    "ApprovalPolicy",
+    "ApprovalRequirement",
     "CreateCheckpointAction",
     "GitDiffAction",
     "GitStatusAction",

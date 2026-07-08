@@ -10,12 +10,14 @@ from a100_agent_lab.executor.actions import (
     WriteFileAction,
 )
 from a100_agent_lab.executor.executor import TaskExecutionResult, TaskExecutor
-from a100_agent_lab.executor.plan import ActionPlan
+from a100_agent_lab.executor.plan import ActionPlan, ApprovalPolicy, ApprovalRequirement
 
 __all__ = [
     "Action",
     "ActionPlan",
     "ActionResult",
+    "ApprovalPolicy",
+    "ApprovalRequirement",
     "CreateCheckpointAction",
     "GitDiffAction",
     "GitStatusAction",
