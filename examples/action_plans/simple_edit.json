@@ -1,0 +1,36 @@
+{
+  "id": "simple-parser-edit",
+  "title": "Simple parser edit",
+  "description": "Read parser.c, replace the placeholder return value, checkpoint, and report the diff.",
+  "metadata": {
+    "example": true
+  },
+  "actions": [
+    {
+      "type": "create_checkpoint",
+      "label": "before edit",
+      "description": "Clean parser baseline."
+    },
+    {
+      "type": "read_file",
+      "path": "parser.c"
+    },
+    {
+      "type": "replace_text",
+      "path": "parser.c",
+      "old": "return 0;",
+      "new": "return 1;"
+    },
+    {
+      "type": "create_checkpoint",
+      "label": "after edit",
+      "description": "Parser returns one token."
+    },
+    {
+      "type": "git_diff"
+    },
+    {
+      "type": "task_report"
+    }
+  ]
+}

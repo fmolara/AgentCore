@@ -1,6 +1,7 @@
 from .agents import Agent
 from .api.client import AgentLab
 from .executor import (
+    ActionPlan,
     CreateCheckpointAction,
     GitDiffAction,
     GitStatusAction,
@@ -25,6 +26,7 @@ from .workspace import Workspace
 __all__ = [
     "Agent",
     "AgentLab",
+    "ActionPlan",
     "CreateCheckpointAction",
     "GitDiffAction",
     "GitStatusAction",

@@ -9,6 +9,7 @@ from a100_agent_lab.tasks import Task, TaskReport, TaskStatus
 
 if TYPE_CHECKING:
     from a100_agent_lab.agents import Agent
+    from a100_agent_lab.executor.plan import ActionPlan
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,9 @@ class TaskExecutor:
             actions=tuple(results),
             report=task.report(),
         )
+
+    def execute_plan(self, task: Task, plan: ActionPlan) -> TaskExecutionResult:
+        return self.execute(task, plan.actions)
 
     def _record_action(self, task: Task, result: ActionResult) -> None:
         actions = task.metadata.setdefault("actions", [])

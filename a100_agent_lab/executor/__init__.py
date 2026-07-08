@@ -10,9 +10,11 @@ from a100_agent_lab.executor.actions import (
     WriteFileAction,
 )
 from a100_agent_lab.executor.executor import TaskExecutionResult, TaskExecutor
+from a100_agent_lab.executor.plan import ActionPlan
 
 __all__ = [
     "Action",
+    "ActionPlan",
     "ActionResult",
     "CreateCheckpointAction",
     "GitDiffAction",
