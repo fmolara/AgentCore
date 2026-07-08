@@ -113,6 +113,29 @@ class Agent:
         task = self.current_task()
         return None if task is None else task.report()
 
+    def propose_plan(
+        self,
+        task: Task,
+        *,
+        instruction: str,
+        planner: Any | None = None,
+        approval_policy: Any | None = None,
+        **generation_options: Any,
+    ):
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this agent")
+        if planner is None:
+            from a100_agent_lab.planning import SimpleLLMPlanner
+
+            planner = SimpleLLMPlanner()
+        return planner.propose(
+            self,
+            task,
+            instruction=instruction,
+            approval_policy=approval_policy,
+            **generation_options,
+        )
+
     def statistics(self) -> dict[str, Any]:
         metrics = self.last_metrics
         return {

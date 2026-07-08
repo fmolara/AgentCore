@@ -16,6 +16,7 @@ from .executor import (
     TaskReportAction,
     WriteFileAction,
 )
+from .planning import Planner, PlannerResult, SimpleLLMPlanner
 from .tasks import (
     Task,
     TaskCheckpoint,
@@ -38,8 +39,11 @@ __all__ = [
     "GitStatusAction",
     "PlanProposal",
     "PlanProposalStatus",
+    "Planner",
+    "PlannerResult",
     "ReadFileAction",
     "ReplaceTextAction",
+    "SimpleLLMPlanner",
     "Task",
     "TaskCheckpoint",
     "TaskCheckpointComparison",
