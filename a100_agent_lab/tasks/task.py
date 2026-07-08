@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -60,7 +61,7 @@ class TaskReport:
             git_status=git_status,
             git_diff=git_diff,
             files_changed=files_changed,
-            metadata=dict(task.metadata),
+            metadata=deepcopy(task.metadata),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -80,7 +81,7 @@ class TaskReport:
             "git_status": self.git_status,
             "git_diff": self.git_diff,
             "files_changed": list(self.files_changed),
-            "metadata": dict(self.metadata),
+            "metadata": deepcopy(self.metadata),
         }
 
 
@@ -118,7 +119,7 @@ class TaskCheckpoint:
             git_branch=git_branch,
             git_status=git_status,
             git_diff=git_diff,
-            metadata=dict(metadata or {}),
+            metadata=deepcopy(metadata or {}),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -131,7 +132,7 @@ class TaskCheckpoint:
             "git_branch": self.git_branch,
             "git_status": self.git_status,
             "git_diff": self.git_diff,
-            "metadata": dict(self.metadata),
+            "metadata": deepcopy(self.metadata),
         }
 
 
@@ -361,7 +362,7 @@ class Task:
             "failed_at": None if self.failed_at is None else self.failed_at.isoformat(),
             "cancelled_at": None if self.cancelled_at is None else self.cancelled_at.isoformat(),
             "failure_reason": self.failure_reason,
-            "metadata": dict(self.metadata),
+            "metadata": deepcopy(self.metadata),
             "checkpoints": [checkpoint.as_dict() for checkpoint in self._checkpoints],
         }
 

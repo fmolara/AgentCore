@@ -1,5 +1,16 @@
 from .agents import Agent
 from .api.client import AgentLab
+from .executor import (
+    CreateCheckpointAction,
+    GitDiffAction,
+    GitStatusAction,
+    ReadFileAction,
+    ReplaceTextAction,
+    TaskExecutionResult,
+    TaskExecutor,
+    TaskReportAction,
+    WriteFileAction,
+)
 from .tasks import (
     Task,
     TaskCheckpoint,
@@ -14,12 +25,21 @@ from .workspace import Workspace
 __all__ = [
     "Agent",
     "AgentLab",
+    "CreateCheckpointAction",
+    "GitDiffAction",
+    "GitStatusAction",
+    "ReadFileAction",
+    "ReplaceTextAction",
     "Task",
     "TaskCheckpoint",
     "TaskCheckpointComparison",
     "TaskCheckpointRestorePlan",
     "TaskCheckpointRestoreResult",
+    "TaskExecutionResult",
+    "TaskExecutor",
     "TaskReport",
+    "TaskReportAction",
     "TaskStatus",
+    "WriteFileAction",
     "Workspace",
 ]
