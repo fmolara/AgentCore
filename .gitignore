@@ -11,4 +11,6 @@ dist/
 .DS_Store
 experiments/logs/*
 /workspace/
+/config/local/
+/config/experiments/
 *.log
