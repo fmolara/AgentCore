@@ -13,7 +13,7 @@ from a100_agent_lab.agents import Agent
 from a100_agent_lab.executor import PlanProposalStatus, TaskExecutor
 from a100_agent_lab.planning import PlannerResult
 from a100_agent_lab.server.events import ServerEventSink, TaskEventBus
-from a100_agent_lab.tasks import Task
+from a100_agent_lab.tasks import Task, TaskStatus
 
 
 @dataclass
@@ -174,6 +174,38 @@ class AgentCoreServerState:
                 )
         return result
 
+    def stream_proposal(
+        self,
+        task_id: str,
+        *,
+        instruction: str,
+        max_tokens: int,
+        temperature: float,
+    ):
+        task_record = self.get_task(task_id)
+        agent = self.get_agent(task_record.agent_id).agent
+        iterator = agent.propose_plan_stream(
+            task_record.task,
+            instruction=instruction,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        result: PlannerResult | None = None
+        while True:
+            try:
+                event = next(iterator)
+            except StopIteration as stop:
+                result = stop.value
+                break
+            yield event
+        if result is not None and result.proposal is not None:
+            with self._lock:
+                self._proposals[result.proposal.id] = ProposalRecord(
+                    id=result.proposal.id,
+                    task_id=task_id,
+                    proposal=result.proposal,
+                )
+
     def get_proposal(self, proposal_id: str) -> ProposalRecord:
         with self._lock:
             record = self._proposals.get(proposal_id)
@@ -211,6 +243,8 @@ class AgentCoreServerState:
         task_id = task_record.id
         proposal = record.proposal
         with self._lock:
+            if task_record.task.status == TaskStatus.CANCELLED:
+                raise HTTPException(status_code=409, detail="task is cancelled")
             if task_id in self._executing_tasks:
                 raise HTTPException(status_code=409, detail="task execution already in progress")
             if proposal.status == PlanProposalStatus.EXECUTED:
@@ -226,6 +260,31 @@ class AgentCoreServerState:
         finally:
             with self._lock:
                 self._executing_tasks.discard(task_id)
+
+    def cancel_task(self, task_id: str, reason: str) -> TaskRecord:
+        task_record = self.get_task(task_id)
+        agent = self.get_agent(task_record.agent_id).agent
+        task = task_record.task
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            raise HTTPException(status_code=409, detail=f"task is already {task.status.value}")
+        task.request_cancellation(reason)
+        agent.emit_event(
+            "cancellation.requested",
+            f"Cancellation requested for task: {task.title}",
+            task=task,
+            payload={"reason": reason},
+        )
+        with self._lock:
+            executing = task_id in self._executing_tasks
+        if not executing and task.status == TaskStatus.CREATED:
+            task.cancel(reason)
+            agent.emit_event(
+                "cancellation.completed",
+                f"Cancellation completed for task: {task.title}",
+                task=task,
+                payload={"reason": reason, "actions": 0},
+            )
+        return task_record
 
     def _workspace_root(self, agent_id: str, requested: str | None) -> Path | None:
         if requested:

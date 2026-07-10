@@ -9,6 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 
 from a100_agent_lab.generation.config import GenerationConfig
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
+from a100_agent_lab.generation.stream import StreamChunk
 from a100_agent_lab.logging.events import generation_event
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -101,7 +102,7 @@ class TransformersRuntime(Runtime):
 
     def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         session = self.create_session()
-        result = self._generate(
+        result = self._collect_stream(
             session,
             prompt or "Say ready.",
             event_type="warmup",
@@ -114,9 +115,9 @@ class TransformersRuntime(Runtime):
         return Session(system_prompt=system_prompt)
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
-        return self._generate(session, prompt, event_type="generation", **kwargs)
+        return self._collect_stream(session, prompt, event_type="generation", **kwargs)
 
-    def _generate(
+    def _collect_stream(
         self,
         session: Session,
         prompt: str,
@@ -124,6 +125,24 @@ class TransformersRuntime(Runtime):
         event_type: str,
         **kwargs: Any,
     ) -> GenerationResult:
+        completed: GenerationResult | None = None
+        for chunk in self._stream(session, prompt, event_type=event_type, **kwargs):
+            if chunk.chunk_type == "failed":
+                raise RuntimeError(chunk.error or "generation failed")
+            if chunk.chunk_type == "completed" and chunk.metrics is not None:
+                completed = GenerationResult(text=chunk.text, metrics=chunk.metrics)
+        if completed is None:
+            raise RuntimeError("generation did not complete")
+        return completed
+
+    def _stream(
+        self,
+        session: Session,
+        prompt: str,
+        *,
+        event_type: str,
+        **kwargs: Any,
+    ) -> Iterator[StreamChunk]:
         if not self.ready():
             raise RuntimeError("runtime is not loaded")
 
@@ -132,6 +151,7 @@ class TransformersRuntime(Runtime):
         messages = session.transcript()
         encoded = self._encode_messages(messages, generation)
         prompt_tokens = int(encoded["input_ids"].shape[-1])
+        yield StreamChunk.started(metadata={"prompt_tokens": prompt_tokens, "runtime": "transformers"})
 
         streamer = TextIteratorStreamer(
             self.tokenizer,
@@ -167,6 +187,8 @@ class TransformersRuntime(Runtime):
         for chunk in streamer:
             if chunk and first_token_at is None:
                 first_token_at = time.perf_counter()
+            if chunk:
+                yield StreamChunk.delta(chunk)
             chunks.append(chunk)
 
         thread.join()
@@ -195,11 +217,10 @@ class TransformersRuntime(Runtime):
                 generation_event("transformers", session, result, self.health(), event_type=event_type)
             )
 
-        return result
+        yield StreamChunk.completed(text=text, metrics=metrics, metadata={"runtime": "transformers"})
 
-    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[str]:
-        result = self.generate(session, prompt, **kwargs)
-        yield result.text
+    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[StreamChunk]:
+        yield from self._stream(session, prompt, event_type="generation", **kwargs)
 
     def tokenize(self, text_or_messages: Any) -> int:
         if self.tokenizer is None:

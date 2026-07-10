@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 
 from a100_agent_lab.generation.config import GenerationConfig
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
+from a100_agent_lab.generation.stream import StreamChunk
 from a100_agent_lab.logging.events import generation_event
 from a100_agent_lab.logging.writer import JsonlWriter
 from a100_agent_lab.runtime.base import Runtime
@@ -87,7 +88,7 @@ class LMDeployRuntime(Runtime):
 
     def warmup(self, prompt: str | None = None, max_tokens: int = 16) -> GenerationResult:
         session = self.create_session()
-        result = self._generate(
+        result = self._collect_stream(
             session,
             prompt or "Say ready.",
             event_type="warmup",
@@ -100,9 +101,9 @@ class LMDeployRuntime(Runtime):
         return Session(system_prompt=system_prompt)
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
-        return self._generate(session, prompt, event_type="generation", **kwargs)
+        return self._collect_stream(session, prompt, event_type="generation", **kwargs)
 
-    def _generate(
+    def _collect_stream(
         self,
         session: Session,
         prompt: str,
@@ -110,6 +111,24 @@ class LMDeployRuntime(Runtime):
         event_type: str,
         **kwargs: Any,
     ) -> GenerationResult:
+        completed: GenerationResult | None = None
+        for chunk in self._stream(session, prompt, event_type=event_type, **kwargs):
+            if chunk.chunk_type == "failed":
+                raise RuntimeError(chunk.error or "generation failed")
+            if chunk.chunk_type == "completed" and chunk.metrics is not None:
+                completed = GenerationResult(text=chunk.text, metrics=chunk.metrics)
+        if completed is None:
+            raise RuntimeError("generation did not complete")
+        return completed
+
+    def _stream(
+        self,
+        session: Session,
+        prompt: str,
+        *,
+        event_type: str,
+        **kwargs: Any,
+    ) -> Iterator[StreamChunk]:
         if not self.ready():
             raise RuntimeError("LMDeploy server is not ready")
 
@@ -117,6 +136,7 @@ class LMDeployRuntime(Runtime):
         session.add_user_message(prompt)
         messages = session.transcript()
         prompt_tokens = self.tokenize(messages, generation=generation)
+        yield StreamChunk.started(metadata={"prompt_tokens": prompt_tokens, "runtime": "lmdeploy"})
 
         payload = {
             "model": self.config["model"].get("name", self.config["model"]["path"]),
@@ -134,6 +154,8 @@ class LMDeployRuntime(Runtime):
         for chunk in self.server.stream_chat(payload):
             if chunk and first_token_at is None:
                 first_token_at = time.perf_counter()
+            if chunk:
+                yield StreamChunk.delta(chunk)
             chunks.append(chunk)
         end = time.perf_counter()
 
@@ -160,11 +182,10 @@ class LMDeployRuntime(Runtime):
                 generation_event("lmdeploy", session, result, self.health(), event_type=event_type)
             )
 
-        return result
+        yield StreamChunk.completed(text=text, metrics=result.metrics, metadata={"runtime": "lmdeploy"})
 
-    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[str]:
-        result = self.generate(session, prompt, **kwargs)
-        yield result.text
+    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[StreamChunk]:
+        yield from self._stream(session, prompt, event_type="generation", **kwargs)
 
     def tokenize(
         self,

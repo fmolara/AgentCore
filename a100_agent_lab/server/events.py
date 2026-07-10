@@ -15,8 +15,13 @@ class StoredEvent:
     event: AgentEvent
 
     def as_sse(self) -> str:
-        data = json.dumps(self.event.as_dict(), ensure_ascii=False, sort_keys=True)
-        return f"event: {self.event.event_type}\nid: {self.id}\ndata: {data}\n\n"
+        return format_sse(self.event, event_id=self.id)
+
+
+def format_sse(event: AgentEvent, *, event_id: int | None = None) -> str:
+    data = json.dumps(event.as_dict(), ensure_ascii=False, sort_keys=True)
+    event_id_line = "" if event_id is None else f"id: {event_id}\n"
+    return f"event: {event.event_type}\n{event_id_line}data: {data}\n\n"
 
 
 class ServerEventSink:
@@ -82,5 +87,5 @@ def _is_terminal(event: AgentEvent) -> bool:
     return event.event_type in {
         "execution.completed",
         "task.failed",
-        "task.cancelled",
+        "cancellation.completed",
     }

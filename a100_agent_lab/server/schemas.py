@@ -27,3 +27,7 @@ class CreateProposalRequest(BaseModel):
 
 class RejectProposalRequest(BaseModel):
     reason: str = "rejected by user"
+
+
+class CancelTaskRequest(BaseModel):
+    reason: str = "cancel requested"

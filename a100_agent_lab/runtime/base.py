@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Iterator
 
 from a100_agent_lab.generation.result import GenerationResult
+from a100_agent_lab.generation.stream import StreamChunk
 from a100_agent_lab.sessions.session import Session
 
 
@@ -37,7 +38,7 @@ class Runtime(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[str]:
+    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[StreamChunk]:
         raise NotImplementedError
 
     @abstractmethod

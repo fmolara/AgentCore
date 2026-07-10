@@ -77,18 +77,23 @@ def main() -> None:
             )["task"]
             task_id = task["id"]
 
-            proposal_response = post_json(
+            proposal_events = post_sse(
                 base_url,
-                f"/v1/tasks/{task_id}/proposals",
+                f"/v1/tasks/{task_id}/proposals/stream",
                 {
-                    "instruction": "Replace return 0 with return 1 in parser.c.",
-                    "max_tokens": 512,
+                    "instruction": (
+                        "Create a short checkpoint, replace return 0 with return 1 in parser.c, "
+                        "then inspect the git diff."
+                    ),
+                    "max_tokens": 768,
                     "temperature": 0,
                 },
             )
-            proposal = proposal_response["proposal"]
+            proposal = _proposal_from_events(proposal_events)
             proposal_id = proposal["id"]
 
+            print("Planner stream:")
+            print("".join(event["payload"].get("delta", "") for event in proposal_events).strip())
             print("Proposed plan:")
             print(json.dumps(proposal["action_plan"], indent=2, sort_keys=True))
             print("\nApproval requirements:")
@@ -179,6 +184,29 @@ def post_json(base_url: str, path: str, payload: dict[str, Any]) -> dict[str, An
     return _json_response(request)
 
 
+def post_sse(base_url: str, path: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        base_url + path,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    events: list[dict[str, Any]] = []
+    current_data: list[str] = []
+    with urllib.request.urlopen(request, timeout=300) as response:
+        for raw_line in response:
+            line = raw_line.decode("utf-8").rstrip("\n")
+            if not line:
+                if current_data:
+                    events.append(json.loads("\n".join(current_data)))
+                    current_data.clear()
+                continue
+            if line.startswith("data: "):
+                current_data.append(line[6:])
+    return events
+
+
 def _json_response(request: urllib.request.Request) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(request, timeout=180) as response:
@@ -201,6 +229,15 @@ def collect_sse(base_url: str, task_id: str, events: list[dict[str, Any]]) -> No
                 continue
             if line.startswith("data: "):
                 current_data.append(line[6:])
+
+
+def _proposal_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    for event in events:
+        if event.get("event_type") == "plan.proposed":
+            proposal = event.get("payload", {}).get("proposal")
+            if isinstance(proposal, dict):
+                return proposal
+    raise RuntimeError("streamed proposal did not produce plan.proposed")
 
 
 if __name__ == "__main__":

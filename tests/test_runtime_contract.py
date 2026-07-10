@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
+from a100_agent_lab.generation.stream import StreamChunk
 from a100_agent_lab.runtime.base import Runtime
 from a100_agent_lab.sessions.session import Session
 
@@ -67,8 +68,21 @@ class FakeRuntime(Runtime):
             ),
         )
 
-    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[str]:
-        yield self.generate(session, prompt, **kwargs).text
+    def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[StreamChunk]:
+        self.generated += 1
+        session.add_user_message(prompt)
+        text = f"fake response {self.generated}"
+        metrics = GenerationMetrics(
+            prompt_tokens=len(prompt.split()),
+            generated_tokens=len(text.split()),
+            ttft_sec=0.01,
+            tokens_per_sec=100.0,
+            wall_sec=0.02,
+        )
+        yield StreamChunk.started(metadata={"prompt_tokens": metrics.prompt_tokens})
+        yield StreamChunk.delta(text)
+        session.add_assistant_message(text)
+        yield StreamChunk.completed(text=text, metrics=metrics)
 
     def tokenize(self, text_or_messages: Any) -> int:
         if isinstance(text_or_messages, list):
@@ -106,7 +120,9 @@ def test_runtime_contract_lifecycle_and_generation() -> None:
     ]
 
     streamed = list(runtime.stream(session, "Explain free.", max_tokens=8))
-    assert streamed == ["fake response 2"]
+    assert [chunk.chunk_type for chunk in streamed] == ["started", "delta", "completed"]
+    assert streamed[1].text_delta == "fake response 2"
+    assert streamed[-1].text == "fake response 2"
 
     assert runtime.tokenize("one two three") == 3
     assert runtime.statistics()["generated_requests"] == 2

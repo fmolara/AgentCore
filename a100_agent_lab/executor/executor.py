@@ -41,6 +41,14 @@ class TaskExecutor:
         self.agent = agent
 
     def execute(self, task: Task, actions: Iterable[Action]) -> TaskExecutionResult:
+        if task.status == TaskStatus.CANCELLED:
+            return TaskExecutionResult(
+                task_id=task.id,
+                status="cancelled",
+                actions=(),
+                report=task.report(),
+                error="task is cancelled",
+            )
         if task.status == TaskStatus.CREATED:
             task.start()
         elif task.status != TaskStatus.RUNNING:
@@ -55,6 +63,8 @@ class TaskExecutor:
         )
 
         for action in actions:
+            if task.cancellation_requested:
+                return self._cancel_execution(task, results)
             self._emit_structured_event(
                 task,
                 "action.started",
@@ -86,6 +96,8 @@ class TaskExecutor:
             self._emit_action_event(task, result)
             self._emit_structured_action_result(task, result)
             results.append(result)
+            if task.cancellation_requested:
+                return self._cancel_execution(task, results)
 
         task.complete()
         self._emit_structured_event(
@@ -99,6 +111,29 @@ class TaskExecutor:
             status="completed",
             actions=tuple(results),
             report=task.report(),
+        )
+
+    def _cancel_execution(self, task: Task, results: list[ActionResult]) -> TaskExecutionResult:
+        if task.status != TaskStatus.CANCELLED:
+            task.cancel(task.cancellation_reason or "cancel requested")
+        self._emit_structured_event(
+            task,
+            "cancellation.completed",
+            f"Cancellation completed for task: {task.title}",
+            {"actions": len(results), "reason": task.cancellation_reason},
+        )
+        self._emit_structured_event(
+            task,
+            "execution.completed",
+            f"Execution cancelled for task: {task.title}",
+            {"actions": len(results), "status": "cancelled"},
+        )
+        return TaskExecutionResult(
+            task_id=task.id,
+            status="cancelled",
+            actions=tuple(results),
+            report=task.report(),
+            error=task.cancellation_reason,
         )
 
     def execute_plan(

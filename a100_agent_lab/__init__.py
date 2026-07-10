@@ -1,6 +1,7 @@
 from .agents import Agent
 from .api.client import AgentLab
 from .events import AgentEvent, EventSink, ListEventSink
+from .generation.stream import StreamChunk
 from .executor import (
     ActionPlan,
     ApprovalPolicy,
@@ -48,6 +49,7 @@ __all__ = [
     "ReadFileAction",
     "ReplaceTextAction",
     "SimpleLLMPlanner",
+    "StreamChunk",
     "Task",
     "TaskCheckpoint",
     "TaskCheckpointComparison",

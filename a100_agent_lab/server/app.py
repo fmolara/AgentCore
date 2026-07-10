@@ -7,7 +7,9 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
 from a100_agent_lab.api.client import AgentLab
+from a100_agent_lab.server.events import format_sse
 from a100_agent_lab.server.schemas import (
+    CancelTaskRequest,
     CreateAgentRequest,
     CreateProposalRequest,
     CreateTaskRequest,
@@ -93,6 +95,10 @@ def create_app(
     def get_task_report(task_id: str):
         return {"report": state.get_task(task_id).task.report().as_dict()}
 
+    @app.post("/v1/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str, request: CancelTaskRequest):
+        return {"task": state.cancel_task(task_id, request.reason).task.as_dict()}
+
     @app.post("/v1/tasks/{task_id}/proposals")
     def create_proposal(task_id: str, request: CreateProposalRequest):
         result = state.create_proposal(
@@ -102,6 +108,25 @@ def create_app(
             temperature=request.temperature,
         )
         return result.as_dict()
+
+    @app.post("/v1/tasks/{task_id}/proposals/stream")
+    def stream_proposal(task_id: str, request: CreateProposalRequest):
+        def generate():
+            event_id = 1
+            for event in state.stream_proposal(
+                task_id,
+                instruction=request.instruction,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            ):
+                yield format_sse(event, event_id=event_id)
+                event_id += 1
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/v1/proposals/{proposal_id}")
     def get_proposal(proposal_id: str):

@@ -50,6 +50,25 @@ class Renderer:
         self.section(title, json.dumps(data, indent=2, sort_keys=True))
 
     def event(self, event: AgentEvent) -> None:
+        if event.event_type == "assistant.started":
+            self.info("Assistant response:")
+            return
+        if event.event_type == "assistant.delta":
+            delta = event.payload.get("delta", "")
+            if self.console is not None:
+                self.console.print(delta, end="")
+            else:
+                print(delta, end="", flush=True)
+            return
+        if event.event_type == "assistant.completed":
+            if self.console is not None:
+                self.console.print()
+            else:
+                print()
+            return
+        if event.event_type == "assistant.failed":
+            self.info(f"[assistant.failed] {event.payload.get('error', event.summary)}")
+            return
         payload = event.payload
         extra = ""
         if event.event_type == "workspace.modified":
@@ -119,12 +138,12 @@ def main() -> int:
             return 1
 
         task = agent.create_task(title=instruction[:80], description=instruction)
-        planner_result = agent.propose_plan(
+        planner_result = consume_proposal_stream(agent.propose_plan_stream(
             task,
             instruction=instruction,
             max_tokens=args.max_tokens,
             temperature=0,
-        )
+        ))
         if planner_result.proposal is None:
             renderer.json("Planner Failed", planner_result.as_dict())
             return 1
@@ -177,8 +196,22 @@ def main() -> int:
                 renderer.report(task)
             elif command == "/abort":
                 if task.status in {TaskStatus.CREATED, TaskStatus.RUNNING}:
-                    task.cancel()
-                    renderer.info("Task aborted.")
+                    task.request_cancellation("aborted by user")
+                    agent.emit_event(
+                        "cancellation.requested",
+                        f"Cancellation requested for task: {task.title}",
+                        task=task,
+                        payload={"reason": "aborted by user"},
+                    )
+                    if task.status == TaskStatus.CREATED:
+                        task.cancel("aborted by user")
+                        agent.emit_event(
+                            "cancellation.completed",
+                            f"Cancellation completed for task: {task.title}",
+                            task=task,
+                            payload={"reason": "aborted by user", "actions": 0},
+                        )
+                    renderer.info("Cancellation requested.")
                 else:
                     renderer.info(f"Task is already {task.status.value}.")
             elif command == "/quit":
@@ -191,6 +224,14 @@ def main() -> int:
         return 0
     finally:
         lab.shutdown()
+
+
+def consume_proposal_stream(stream):
+    while True:
+        try:
+            next(stream)
+        except StopIteration as stop:
+            return stop.value
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ class TaskReport:
     failed_at: str | None
     cancelled_at: str | None
     failure_reason: str | None
+    cancellation_requested: bool = False
+    cancellation_reason: str | None = None
     git_branch: str | None = None
     git_status: str | None = None
     git_diff: str | None = None
@@ -57,6 +59,8 @@ class TaskReport:
             failed_at=None if task.failed_at is None else task.failed_at.isoformat(),
             cancelled_at=None if task.cancelled_at is None else task.cancelled_at.isoformat(),
             failure_reason=task.failure_reason,
+            cancellation_requested=task.cancellation_requested,
+            cancellation_reason=task.cancellation_reason,
             git_branch=git_branch,
             git_status=git_status,
             git_diff=git_diff,
@@ -77,6 +81,8 @@ class TaskReport:
             "failed_at": self.failed_at,
             "cancelled_at": self.cancelled_at,
             "failure_reason": self.failure_reason,
+            "cancellation_requested": self.cancellation_requested,
+            "cancellation_reason": self.cancellation_reason,
             "git_branch": self.git_branch,
             "git_status": self.git_status,
             "git_diff": self.git_diff,
@@ -298,6 +304,9 @@ class Task:
     failed_at: datetime | None = None
     cancelled_at: datetime | None = None
     failure_reason: str | None = None
+    cancellation_requested: bool = False
+    cancellation_requested_at: datetime | None = None
+    cancellation_reason: str | None = None
     _checkpoints: list[TaskCheckpoint] = field(default_factory=list, repr=False)
     _on_event: Callable[["Task", str], None] | None = field(default=None, repr=False, compare=False)
     _reporter: Callable[["Task"], TaskReport] | None = field(default=None, repr=False, compare=False)
@@ -341,11 +350,25 @@ class Task:
         self.updated_at = now
         self._emit("task_failed")
 
-    def cancel(self) -> None:
+    def request_cancellation(self, reason: str = "cancel requested") -> None:
+        if self.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            return
+        now = self._now()
+        self.cancellation_requested = True
+        self.cancellation_requested_at = now
+        self.cancellation_reason = reason
+        self.updated_at = now
+
+    def cancel(self, reason: str | None = None) -> None:
         self._require_status({TaskStatus.CREATED, TaskStatus.RUNNING})
         now = self._now()
         self.status = TaskStatus.CANCELLED
         self.cancelled_at = now
+        if reason is not None:
+            self.cancellation_reason = reason
+        self.cancellation_requested = True
+        if self.cancellation_requested_at is None:
+            self.cancellation_requested_at = now
         self.updated_at = now
         self._emit("task_cancelled")
 
@@ -362,6 +385,11 @@ class Task:
             "failed_at": None if self.failed_at is None else self.failed_at.isoformat(),
             "cancelled_at": None if self.cancelled_at is None else self.cancelled_at.isoformat(),
             "failure_reason": self.failure_reason,
+            "cancellation_requested": self.cancellation_requested,
+            "cancellation_requested_at": (
+                None if self.cancellation_requested_at is None else self.cancellation_requested_at.isoformat()
+            ),
+            "cancellation_reason": self.cancellation_reason,
             "metadata": deepcopy(self.metadata),
             "checkpoints": [checkpoint.as_dict() for checkpoint in self._checkpoints],
         }

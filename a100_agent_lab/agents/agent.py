@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 
 from a100_agent_lab.events import AgentEvent
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
+from a100_agent_lab.generation.stream import StreamChunk
 from a100_agent_lab.logging.events import task_event
 from a100_agent_lab.sessions.session import Session
 from a100_agent_lab.tasks import (
@@ -73,9 +74,25 @@ class Agent:
         self._record_result(result)
         return result
 
-    def stream(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+    def stream(self, prompt: str, *, task: Task | None = None, **kwargs: Any) -> Iterator[AgentEvent]:
         options = self._merged_options(kwargs)
-        yield from self.lab.stream(self.session, prompt, **options)
+        try:
+            for chunk in self.lab.stream(self.session, prompt, **options):
+                event = self._assistant_event(chunk, task=task)
+                if chunk.chunk_type == "completed" and chunk.metrics is not None:
+                    self._record_result(GenerationResult(text=chunk.text, metrics=chunk.metrics))
+                self._emit_existing_event(event)
+                yield event
+        except Exception as exc:
+            event = AgentEvent(
+                event_type="assistant.failed",
+                summary="Assistant stream failed",
+                task_id=None if task is None else task.id,
+                session_id=self.session.id,
+                payload={"error": str(exc)},
+            )
+            self._emit_existing_event(event)
+            yield event
 
     def reset(self) -> None:
         self.lab.reset_session(self.session.id)
@@ -152,6 +169,31 @@ class Agent:
             )
         return result
 
+    def propose_plan_stream(
+        self,
+        task: Task,
+        *,
+        instruction: str,
+        planner: Any | None = None,
+        approval_policy: Any | None = None,
+        **generation_options: Any,
+    ):
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this agent")
+        if planner is None:
+            from a100_agent_lab.planning import SimpleLLMPlanner
+
+            planner = SimpleLLMPlanner()
+        if not hasattr(planner, "propose_stream"):
+            raise ValueError("planner does not support streaming proposals")
+        return planner.propose_stream(
+            self,
+            task,
+            instruction=instruction,
+            approval_policy=approval_policy,
+            **generation_options,
+        )
+
     def execute_proposal(self, task: Task, proposal: Any, *, approved: bool = False):
         if task not in self._tasks:
             raise ValueError("task is not owned by this agent")
@@ -204,6 +246,47 @@ class Agent:
             self.event_sink.emit(event)
         else:
             self.event_sink(event)
+
+    def _emit_existing_event(self, event: AgentEvent) -> None:
+        if self.event_sink is None:
+            return
+        if hasattr(self.event_sink, "emit"):
+            self.event_sink.emit(event)
+        else:
+            self.event_sink(event)
+
+    def _assistant_event(self, chunk: StreamChunk, *, task: Task | None) -> AgentEvent:
+        event_type = {
+            "started": "assistant.started",
+            "delta": "assistant.delta",
+            "completed": "assistant.completed",
+            "failed": "assistant.failed",
+        }.get(chunk.chunk_type, "assistant.delta")
+        summary = {
+            "assistant.started": "Assistant response started",
+            "assistant.delta": "Assistant response delta",
+            "assistant.completed": "Assistant response completed",
+            "assistant.failed": "Assistant response failed",
+        }[event_type]
+        payload: dict[str, Any] = {
+            "metadata": chunk.metadata,
+            "timestamp": chunk.timestamp,
+        }
+        if chunk.text_delta:
+            payload["delta"] = chunk.text_delta
+        if chunk.text:
+            payload["text"] = chunk.text
+        if chunk.metrics is not None:
+            payload["metrics"] = chunk.metrics.as_dict()
+        if chunk.error:
+            payload["error"] = chunk.error
+        return AgentEvent(
+            event_type=event_type,
+            summary=summary,
+            task_id=None if task is None else task.id,
+            session_id=self.session.id,
+            payload=payload,
+        )
 
     def statistics(self) -> dict[str, Any]:
         metrics = self.last_metrics
