@@ -66,6 +66,7 @@ Planning:
 
 ```http
 POST /v1/tasks/{task_id}/proposals
+POST /v1/tasks/{task_id}/proposals/stream
 GET  /v1/proposals/{proposal_id}
 POST /v1/proposals/{proposal_id}/approve
 POST /v1/proposals/{proposal_id}/reject
@@ -75,6 +76,7 @@ Execution:
 
 ```http
 POST /v1/proposals/{proposal_id}/execute
+POST /v1/tasks/{task_id}/cancel
 ```
 
 Workspace inspection:
@@ -124,6 +126,16 @@ Request a proposal:
 }
 ```
 
+Request a streamed proposal:
+
+```http
+POST /v1/tasks/{task_id}/proposals/stream
+```
+
+The request body is the same as non-streaming proposal creation. The response is
+an SSE stream containing user-visible assistant output first, followed by
+`plan.proposed` if the completed assistant text validates as an ActionPlan.
+
 Reject a proposal:
 
 ```json
@@ -145,7 +157,7 @@ and task reports may execute under the default approval policy.
 
 ## SSE Format
 
-Task events are serialized as Server-Sent Events:
+Task events and streamed proposal events are serialized as Server-Sent Events:
 
 ```text
 event: action.started
@@ -165,6 +177,60 @@ comments:
 No raw chain-of-thought is exposed. Events contain only structured work state:
 task lifecycle, plan proposal/approval/rejection, action status, workspace
 modifications, checkpoints, Git diff, and final execution status.
+
+## Token Streaming
+
+Assistant token streaming uses the same `AgentEvent` schema as operational
+events:
+
+```text
+event: assistant.started
+data: {"event_type":"assistant.started","payload":{"metadata":{"prompt_tokens":42}}}
+
+event: assistant.delta
+data: {"event_type":"assistant.delta","payload":{"delta":"visible assistant text"}}
+
+event: assistant.completed
+data: {"event_type":"assistant.completed","payload":{"text":"complete visible text","metrics":{...}}}
+```
+
+Only visible assistant text is streamed. Runtime-specific fields such as hidden
+reasoning, chain-of-thought, or backend-private deltas are not exposed.
+
+For streamed planning, AgentCore buffers the complete visible assistant response
+and validates it as an ActionPlan only after `assistant.completed`. If validation
+fails, the stream emits `assistant.failed` and no proposal is stored.
+
+## Cancellation
+
+Cancellation is cooperative:
+
+```http
+POST /v1/tasks/{task_id}/cancel
+```
+
+Request body:
+
+```json
+{
+  "reason": "user aborted"
+}
+```
+
+The server emits:
+
+```text
+event: cancellation.requested
+event: cancellation.completed
+```
+
+If the task has not started, it is marked cancelled immediately. If execution is
+already running, the current atomic action is allowed to finish safely and the
+executor stops before the next action. AgentCore does not claim that an
+already-running GPU request, filesystem operation, or runtime call can always be
+interrupted instantly.
+
+Cancelled tasks reject new execution requests.
 
 ## Security Model
 

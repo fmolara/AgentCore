@@ -172,6 +172,10 @@ Create an agent, create a task, request a proposal, approve explicitly, then
 execute. Mutating plans are never executed automatically and Git commits are
 never created automatically.
 
+For streamed planning, use `POST /v1/tasks/{task_id}/proposals/stream`. The
+stream exposes only visible assistant text plus structured operational events.
+Cancellation is cooperative via `POST /v1/tasks/{task_id}/cancel`.
+
 See [HTTP API](docs/architecture/HTTP_API.md) for endpoint details and SSE
 format.
 
