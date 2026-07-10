@@ -150,6 +150,31 @@ python scripts/smoke_transformers.py
 
 Generation events are written as JSONL under `experiments/logs/`.
 
+## HTTP Server
+
+AgentCore also exposes a small localhost HTTP API with Server-Sent Events for
+task execution traces:
+
+```bash
+python scripts/agentcore_server.py \
+  --config config/sglang-a100.yaml \
+  --host 127.0.0.1 \
+  --port 8080
+```
+
+Minimal lifecycle:
+
+```bash
+curl -s http://127.0.0.1:8080/health
+```
+
+Create an agent, create a task, request a proposal, approve explicitly, then
+execute. Mutating plans are never executed automatically and Git commits are
+never created automatically.
+
+See [HTTP API](docs/architecture/HTTP_API.md) for endpoint details and SSE
+format.
+
 ## Tests
 
 Lightweight tests do not load the 27B model and do not require a GPU:
@@ -173,4 +198,5 @@ Milestone 1 architecture documents:
 - [Core Platform](docs/architecture/CORE_PLATFORM.md)
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
+- [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)
