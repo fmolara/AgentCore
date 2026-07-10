@@ -76,6 +76,7 @@ class AgentLab:
         workspace_mode: str = Workspace.READ_WRITE,
         workspace_metadata: dict[str, Any] | None = None,
         generation_options: dict[str, Any] | None = None,
+        event_sink: Any | None = None,
         **kwargs: Any,
     ) -> Agent:
         return Agent(
@@ -87,6 +88,7 @@ class AgentLab:
             workspace_mode=workspace_mode,
             workspace_metadata=workspace_metadata,
             generation_options=generation_options,
+            event_sink=event_sink,
             **kwargs,
         )
 

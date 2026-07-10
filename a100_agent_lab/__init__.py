@@ -1,5 +1,6 @@
 from .agents import Agent
 from .api.client import AgentLab
+from .events import AgentEvent, EventSink, ListEventSink
 from .executor import (
     ActionPlan,
     ApprovalPolicy,
@@ -31,9 +32,11 @@ from .workspace import Workspace
 __all__ = [
     "Agent",
     "AgentLab",
+    "AgentEvent",
     "ActionPlan",
     "ApprovalPolicy",
     "ApprovalRequirement",
+    "EventSink",
     "CreateCheckpointAction",
     "GitDiffAction",
     "GitStatusAction",
@@ -41,6 +44,7 @@ __all__ = [
     "PlanProposalStatus",
     "Planner",
     "PlannerResult",
+    "ListEventSink",
     "ReadFileAction",
     "ReplaceTextAction",
     "SimpleLLMPlanner",

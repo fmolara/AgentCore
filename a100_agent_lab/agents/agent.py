@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
+from a100_agent_lab.events import AgentEvent
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.logging.events import task_event
 from a100_agent_lab.sessions.session import Session
@@ -31,6 +32,7 @@ class Agent:
         workspace_mode: str = Workspace.READ_WRITE,
         workspace_metadata: dict[str, Any] | None = None,
         generation_options: dict[str, Any] | None = None,
+        event_sink: Any | None = None,
         **kwargs: Any,
     ):
         self.lab = lab
@@ -47,6 +49,7 @@ class Agent:
         self._total_generated_tokens = 0
         self._tasks: list[Task] = []
         self._current_task: Task | None = None
+        self.event_sink = event_sink
 
     @property
     def runtime(self):
@@ -128,13 +131,26 @@ class Agent:
             from a100_agent_lab.planning import SimpleLLMPlanner
 
             planner = SimpleLLMPlanner()
-        return planner.propose(
+        result = planner.propose(
             self,
             task,
             instruction=instruction,
             approval_policy=approval_policy,
             **generation_options,
         )
+        if result.proposal is not None:
+            self.emit_event(
+                "plan.proposed",
+                f"Plan proposed: {result.proposal.title}",
+                task=task,
+                payload={
+                    "proposal": result.proposal.as_dict(),
+                    "approval_requirements": [
+                        requirement.as_dict() for requirement in result.proposal.approval_requirements
+                    ],
+                },
+            )
+        return result
 
     def execute_proposal(self, task: Task, proposal: Any, *, approved: bool = False):
         if task not in self._tasks:
@@ -146,9 +162,48 @@ class Agent:
 
             if proposal.status == PlanProposalStatus.PROPOSED:
                 proposal.approve()
+                self.emit_event(
+                    "plan.approved",
+                    f"Plan approved: {proposal.title}",
+                    task=task,
+                    payload={"proposal_id": proposal.id},
+                )
         from a100_agent_lab.executor import TaskExecutor
 
         return proposal.execute(TaskExecutor(self), task)
+
+    def reject_proposal(self, task: Task, proposal: Any, reason: str) -> None:
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this agent")
+        proposal.reject(reason)
+        self.emit_event(
+            "plan.rejected",
+            f"Plan rejected: {proposal.title}",
+            task=task,
+            payload={"proposal_id": proposal.id, "reason": reason},
+        )
+
+    def emit_event(
+        self,
+        event_type: str,
+        summary: str,
+        *,
+        task: Task | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        if self.event_sink is None:
+            return
+        event = AgentEvent(
+            event_type=event_type,
+            summary=summary,
+            task_id=None if task is None else task.id,
+            session_id=self.session.id,
+            payload=payload or {},
+        )
+        if hasattr(self.event_sink, "emit"):
+            self.event_sink.emit(event)
+        else:
+            self.event_sink(event)
 
     def statistics(self) -> dict[str, Any]:
         metrics = self.last_metrics
@@ -193,6 +248,15 @@ class Agent:
             task.metadata["git_commit_after"] = self.git.current_commit()
         if event_type in {"task_completed", "task_failed", "task_cancelled"}:
             self._current_task = None if self._current_task is task else self._current_task
+        mapped_event_type = {
+            "task_created": "task.created",
+            "task_started": "task.started",
+            "task_completed": "task.completed",
+            "task_failed": "task.failed",
+            "task_cancelled": "task.cancelled",
+        }.get(event_type)
+        if mapped_event_type is not None:
+            self.emit_event(mapped_event_type, f"Task {task.status.value}: {task.title}", task=task)
         writer = getattr(self.lab.runtime, "log_writer", None)
         if writer is None:
             return

@@ -48,8 +48,19 @@ class TaskExecutor:
 
         context = TaskExecutionContext(agent=self.agent, task=task)
         results: list[ActionResult] = []
+        self._emit_structured_event(
+            task,
+            "execution.started",
+            f"Execution started for task: {task.title}",
+        )
 
         for action in actions:
+            self._emit_structured_event(
+                task,
+                "action.started",
+                f"Starting action: {action.action_type}",
+                {"action_id": action.id, "action_type": action.action_type},
+            )
             try:
                 result = action.execute(context)
             except Exception as exc:
@@ -60,6 +71,7 @@ class TaskExecutor:
                 )
                 self._record_action(task, result)
                 self._emit_action_event(task, result)
+                self._emit_structured_action_result(task, result)
                 task.fail(str(exc))
                 results.append(result)
                 return TaskExecutionResult(
@@ -72,9 +84,16 @@ class TaskExecutor:
 
             self._record_action(task, result)
             self._emit_action_event(task, result)
+            self._emit_structured_action_result(task, result)
             results.append(result)
 
         task.complete()
+        self._emit_structured_event(
+            task,
+            "execution.completed",
+            f"Execution completed for task: {task.title}",
+            {"actions": len(results)},
+        )
         return TaskExecutionResult(
             task_id=task.id,
             status="completed",
@@ -127,3 +146,58 @@ class TaskExecutor:
                 "status": result.status,
             }
         )
+
+    def _emit_structured_action_result(self, task: Task, result: ActionResult) -> None:
+        if result.status == "ok":
+            self._emit_structured_event(
+                task,
+                "action.completed",
+                f"Completed action: {result.action_type}",
+                {"action": result.as_dict()},
+            )
+            self._emit_derived_events(task, result)
+            return
+        self._emit_structured_event(
+            task,
+            "action.failed",
+            f"Failed action: {result.action_type}",
+            {"action": result.as_dict()},
+        )
+
+    def _emit_derived_events(self, task: Task, result: ActionResult) -> None:
+        if result.action_type in {"write_file", "replace_text"}:
+            files = result.data.get("files_changed", [])
+            self._emit_structured_event(
+                task,
+                "workspace.modified",
+                "Workspace modified",
+                {"files_changed": files, "action": result.as_dict()},
+            )
+        elif result.action_type == "create_checkpoint":
+            checkpoint = result.data.get("checkpoint", {})
+            label = checkpoint.get("label") if isinstance(checkpoint, dict) else None
+            self._emit_structured_event(
+                task,
+                "checkpoint.created",
+                f"Checkpoint created: {label or 'checkpoint'}",
+                {"checkpoint": checkpoint},
+            )
+        elif result.action_type == "git_diff":
+            self._emit_structured_event(
+                task,
+                "git.diff",
+                "Git diff captured",
+                {"diff": result.data.get("stdout", "")},
+            )
+
+    def _emit_structured_event(
+        self,
+        task: Task,
+        event_type: str,
+        summary: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        emit = getattr(self.agent, "emit_event", None)
+        if emit is None:
+            return
+        emit(event_type, summary, task=task, payload=payload or {})
