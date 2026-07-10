@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterator
 
+import pytest
+
 from a100_agent_lab import AgentLab, PlanProposalStatus
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.runtime.base import Runtime
@@ -83,6 +85,19 @@ def valid_mutating_plan_json() -> str:
     )
 
 
+def executable_mutating_plan_json() -> str:
+    return json.dumps(
+        {
+            "title": "Edit parser",
+            "description": "Replace parser return value.",
+            "actions": [
+                {"type": "replace_text", "path": "parser.c", "old": "return 0;", "new": "return 1;"},
+            ],
+            "metadata": {"source": "fake-model"},
+        }
+    )
+
+
 def prepare_agent(tmp_path, *, response: str):
     lab = make_lab(tmp_path / "workspace", response=response)
     agent = lab.create_agent(system_prompt="You are a concise coding assistant.")
@@ -142,4 +157,42 @@ def test_mutating_llm_proposal_requires_approval(tmp_path) -> None:
     requirements = result.proposal.approval_requirements
     assert [requirement.action_type for requirement in requirements] == ["replace_text"]
     assert requirements[0].reason == "mutating action requires approval"
+    assert "return 0;" in agent.files.read_text("parser.c")
+
+
+def test_approved_llm_proposal_can_be_executed(tmp_path) -> None:
+    agent, task = prepare_agent(tmp_path, response=executable_mutating_plan_json())
+    proposal_result = agent.propose_plan(task, instruction="Replace return 0 with return 1 in parser.c")
+
+    assert proposal_result.proposal is not None
+    execution = agent.execute_proposal(task, proposal_result.proposal, approved=True)
+
+    assert execution.status == "completed"
+    assert proposal_result.proposal.status == PlanProposalStatus.EXECUTED
+    assert task.status == "completed"
+    assert "return 1;" in agent.files.read_text("parser.c")
+
+
+def test_unapproved_mutating_llm_proposal_is_refused(tmp_path) -> None:
+    agent, task = prepare_agent(tmp_path, response=executable_mutating_plan_json())
+    proposal_result = agent.propose_plan(task, instruction="Replace return 0 with return 1 in parser.c")
+
+    assert proposal_result.proposal is not None
+    execution = agent.execute_proposal(task, proposal_result.proposal)
+
+    assert execution.status == "approval_required"
+    assert proposal_result.proposal.status == PlanProposalStatus.PROPOSED
+    assert task.status == "created"
+    assert "return 0;" in agent.files.read_text("parser.c")
+
+
+def test_rejected_llm_proposal_cannot_execute(tmp_path) -> None:
+    agent, task = prepare_agent(tmp_path, response=executable_mutating_plan_json())
+    proposal_result = agent.propose_plan(task, instruction="Replace return 0 with return 1 in parser.c")
+
+    assert proposal_result.proposal is not None
+    proposal_result.proposal.reject("not the requested edit")
+    with pytest.raises(ValueError, match="cannot execute rejected proposal"):
+        agent.execute_proposal(task, proposal_result.proposal, approved=True)
+
     assert "return 0;" in agent.files.read_text("parser.c")

@@ -136,6 +136,20 @@ class Agent:
             **generation_options,
         )
 
+    def execute_proposal(self, task: Task, proposal: Any, *, approved: bool = False):
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this agent")
+        if proposal.task_id != task.id:
+            raise ValueError("proposal task_id does not match task")
+        if approved:
+            from a100_agent_lab.executor import PlanProposalStatus
+
+            if proposal.status == PlanProposalStatus.PROPOSED:
+                proposal.approve()
+        from a100_agent_lab.executor import TaskExecutor
+
+        return proposal.execute(TaskExecutor(self), task)
+
     def statistics(self) -> dict[str, Any]:
         metrics = self.last_metrics
         return {
