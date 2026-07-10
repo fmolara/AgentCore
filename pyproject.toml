@@ -12,11 +12,14 @@ dependencies = [
   "torch",
   "transformers",
   "PyYAML",
+  "fastapi>=0.115,<0.116",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
+  "httpx>=0.28",
 ]
 
 [tool.setuptools.packages.find]
