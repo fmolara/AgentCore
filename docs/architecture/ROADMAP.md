@@ -17,27 +17,43 @@ Goal:
 
 Milestone 1 is the architectural baseline for future work.
 
-## Milestone 2: External Tools
+## Milestone 2: Coding Workspace
+
+Status: COMPLETE
 
 Goal:
 
-- introduce a controlled tool abstraction;
-- add filesystem access through explicit, reviewable APIs;
-- add Git operations through explicit, reviewable APIs;
-- define tool result schemas;
-- keep tool execution observable and auditable.
+- provide a managed workspace boundary;
+- add safe file editing APIs;
+- add constrained local Git workflows;
+- introduce tasks, reports, checkpoints, restore planning, and restore execution;
+- support explicit ActionPlans, PlanProposals, and ApprovalPolicy;
+- execute approved plans through TaskExecutor;
+- stream structured operational events and visible assistant output;
+- support cooperative cancellation.
 
-No model-native function calling policy is assumed by this milestone.
+Milestone 2 is the architectural baseline for coding workspace workflows. It
+remains non-autonomous: proposals require review and mutating plans require
+explicit approval.
 
-## Milestone 3: Planning & Memory
+## Milestone 3: Autonomous Coding Agent
+
+Status: PLANNED
 
 Goal:
 
-- represent task plans;
-- track short-term working memory;
-- track project/session memory;
-- define what is stored, when it is updated, and how it is surfaced to agents;
-- keep memory behavior inspectable and resettable.
+- evolve from reviewable execution toward controlled autonomous coding work.
+
+High-level areas:
+
+- planner improvements;
+- long-running tasks;
+- tool registry;
+- memory;
+- workspace reasoning;
+- multi-agent collaboration.
+
+No implementation sequence is defined here.
 
 ## Milestone 4: Coding Agent
 

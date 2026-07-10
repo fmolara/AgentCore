@@ -12,8 +12,8 @@ layer that sits on top of existing runtimes such as:
 - HuggingFace Transformers
 
 The goal is to provide stable Python abstractions for runtime management,
-persistent conversations, generation metrics, structured logging, and future
-agent capabilities such as tools, filesystem access, and Git integration.
+persistent conversations, generation metrics, structured logging, managed
+workspaces, local Git workflows, reviewable plans, and approved task execution.
 
 Current runtime roles:
 
@@ -23,6 +23,38 @@ Current runtime roles:
 
 The platform currently includes runtime adapters for all three backends while
 keeping the public `AgentLab` API runtime-independent.
+
+## Current Status
+
+Milestone 1, Core Platform, is complete. It established the runtime-independent
+foundation:
+
+- `AgentLab`, `Agent`, and `Session`;
+- Transformers, SGLang, and LMDeploy runtime adapters;
+- warmup and health reporting;
+- persistent benchmarks;
+- structured JSONL logging;
+- runtime contract tests.
+
+Milestone 2, Coding Workspace, is complete. AgentCore can now:
+
+- manage workspace-scoped files;
+- run constrained local Git workflows;
+- create tasks;
+- propose validated action plans;
+- require explicit approval for mutating plans;
+- execute approved plans;
+- report task state and Git diffs;
+- create checkpoints;
+- plan and execute restores;
+- expose an interactive CLI;
+- expose a localhost HTTP API;
+- stream visible assistant output and operational events through SSE;
+- request cooperative cancellation.
+
+AgentCore still does not expose shell access, arbitrary subprocess execution,
+network Git operations, automatic Git commits, production authentication, or
+persistent server storage.
 
 ## Public API
 
@@ -201,6 +233,7 @@ Milestone 1 architecture documents:
 
 - [Core Platform](docs/architecture/CORE_PLATFORM.md)
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
+- [Coding Workspace](docs/architecture/CODING_WORKSPACE.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)
