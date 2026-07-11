@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from agentcore_protocol import API_VERSION, PROTOCOL_VERSION, SCHEMA_VERSION
 from a100_agent_lab.api.client import AgentLab
 from a100_agent_lab.agents import Agent
 from a100_agent_lab.executor import PlanProposalStatus, TaskExecutor
@@ -82,6 +83,9 @@ class AgentCoreServerState:
             "status": "ok",
             "ready": self.lab.ready(),
             "safe_default_host": "127.0.0.1",
+            "api_version": API_VERSION,
+            "protocol_version": PROTOCOL_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "runtime": self.lab.statistics(),
             "counts": counts,
         }

@@ -8,6 +8,7 @@ from typing import Any, Iterator
 import httpx
 import pytest
 
+from agentcore_protocol import API_VERSION, PROTOCOL_VERSION, SCHEMA_VERSION
 from a100_agent_lab.api.client import AgentLab
 from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
 from a100_agent_lab.runtime.base import Runtime
@@ -146,6 +147,9 @@ async def test_health_endpoint_and_localhost_safe_default(tmp_path, monkeypatch)
     assert data["status"] == "ok"
     assert data["safe_default_host"] == "127.0.0.1"
     assert data["ready"] is True
+    assert data["api_version"] == API_VERSION
+    assert data["protocol_version"] == PROTOCOL_VERSION
+    assert data["schema_version"] == SCHEMA_VERSION
 
 
 @pytest.mark.anyio

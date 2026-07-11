@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
 from a100_agent_lab.api.client import AgentLab
-from a100_agent_lab.server.events import format_sse
+from agentcore_protocol import format_sse
 from a100_agent_lab.server.schemas import (
     CancelTaskRequest,
     CreateAgentRequest,

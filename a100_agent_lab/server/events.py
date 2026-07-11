@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import queue
 from dataclasses import dataclass
 from threading import RLock
 from typing import Iterator
 
-from a100_agent_lab.events import AgentEvent
+from agentcore_protocol import AgentEvent, format_sse
 
 
 @dataclass(frozen=True)
@@ -16,12 +15,6 @@ class StoredEvent:
 
     def as_sse(self) -> str:
         return format_sse(self.event, event_id=self.id)
-
-
-def format_sse(event: AgentEvent, *, event_id: int | None = None) -> str:
-    data = json.dumps(event.as_dict(), ensure_ascii=False, sort_keys=True)
-    event_id_line = "" if event_id is None else f"id: {event_id}\n"
-    return f"event: {event.event_type}\n{event_id_line}data: {data}\n\n"
 
 
 class ServerEventSink:
