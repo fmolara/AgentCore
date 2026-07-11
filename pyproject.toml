@@ -28,6 +28,10 @@ include = ["a100_agent_lab*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = [
+  ".",
+  "packages/agentcore-protocol/src",
+]
 markers = [
   "integration: opt-in tests that start real runtimes and may require GPU/model access",
 ]

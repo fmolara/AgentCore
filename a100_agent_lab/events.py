@@ -1,29 +1,16 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+import sys
+from pathlib import Path
 from typing import Any, Protocol
 
-
-@dataclass(frozen=True)
-class AgentEvent:
-    event_type: str
-    summary: str
-    task_id: str | None = None
-    session_id: str | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "timestamp": self.timestamp,
-            "event_type": self.event_type,
-            "task_id": self.task_id,
-            "session_id": self.session_id,
-            "summary": self.summary,
-            "payload": deepcopy(self.payload),
-        }
+try:
+    from agentcore_protocol import AgentEvent
+except ModuleNotFoundError:  # pragma: no cover - source-tree bootstrap for the transitional monorepo split.
+    protocol_src = Path(__file__).resolve().parents[1] / "packages" / "agentcore-protocol" / "src"
+    if protocol_src.exists():
+        sys.path.insert(0, str(protocol_src))
+    from agentcore_protocol import AgentEvent
 
 
 class EventSink(Protocol):
