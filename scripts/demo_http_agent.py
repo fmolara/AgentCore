@@ -7,14 +7,14 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "packages" / "agentcore-protocol" / "src"))
 sys.path.insert(0, str(ROOT))
 
+from agentcore_protocol import AgentCoreClient, AgentEvent
 from a100_agent_lab.workspace import Workspace
 
 
@@ -58,62 +58,54 @@ def main() -> None:
                 server = subprocess.Popen(command, cwd=ROOT, stdout=log_file, stderr=subprocess.STDOUT)
                 wait_for_health(base_url)
 
-            agent = post_json(
-                base_url,
-                "/v1/agents",
-                {
-                    "system_prompt": "You are a concise coding assistant.",
-                    "workspace_root": str(workspace_root),
-                },
-            )
-            agent_id = agent["id"]
-            task = post_json(
-                base_url,
-                f"/v1/agents/{agent_id}/tasks",
-                {
-                    "title": "Replace parser return value",
-                    "description": "Replace return 0 with return 1 in parser.c.",
-                },
-            )["task"]
-            task_id = task["id"]
+            with AgentCoreClient(base_url) as client:
+                client.check_compatibility()
+                agent = client.create_agent(
+                    system_prompt="You are a concise coding assistant.",
+                    workspace_root=str(workspace_root),
+                )
+                task = client.create_task(
+                    agent.id,
+                    title="Replace parser return value",
+                    description="Replace return 0 with return 1 in parser.c.",
+                )
 
-            proposal_events = post_sse(
-                base_url,
-                f"/v1/tasks/{task_id}/proposals/stream",
-                {
-                    "instruction": (
-                        "Create a short checkpoint, replace return 0 with return 1 in parser.c, "
-                        "then inspect the git diff."
-                    ),
-                    "max_tokens": 768,
-                    "temperature": 0,
-                },
-            )
-            proposal = _proposal_from_events(proposal_events)
-            proposal_id = proposal["id"]
+                proposal_events = list(
+                    client.stream_proposal(
+                        task.id,
+                        instruction=(
+                            "Create a short checkpoint, replace return 0 with return 1 in parser.c, "
+                            "then inspect the git diff."
+                        ),
+                        max_tokens=768,
+                        temperature=0,
+                    )
+                )
+                proposal = _proposal_from_events(proposal_events)
+                proposal_id = proposal["id"]
 
-            print("Planner stream:")
-            print("".join(event["payload"].get("delta", "") for event in proposal_events).strip())
-            print("Proposed plan:")
-            print(json.dumps(proposal["action_plan"], indent=2, sort_keys=True))
-            print("\nApproval requirements:")
-            print(json.dumps(proposal["approval_requirements"], indent=2, sort_keys=True))
+                print("Planner stream:")
+                print("".join(event.payload.get("delta", "") for event in proposal_events).strip())
+                print("Proposed plan:")
+                print(json.dumps(proposal["action_plan"], indent=2, sort_keys=True))
+                print("\nApproval requirements:")
+                print(json.dumps(proposal["approval_requirements"], indent=2, sort_keys=True))
 
-            events: list[dict[str, Any]] = []
-            sse_thread = threading.Thread(
-                target=collect_sse,
-                args=(base_url, task_id, events),
-                daemon=True,
-            )
-            sse_thread.start()
-            time.sleep(0.2)
+                events: list[dict[str, Any]] = []
+                sse_thread = threading.Thread(
+                    target=collect_task_events,
+                    args=(base_url, task.id, events),
+                    daemon=True,
+                )
+                sse_thread.start()
+                time.sleep(0.2)
 
-            post_json(base_url, f"/v1/proposals/{proposal_id}/approve", {})
-            execution = post_json(base_url, f"/v1/proposals/{proposal_id}/execute", {})
-            sse_thread.join(timeout=20)
+                client.approve_proposal(proposal_id)
+                execution = client.execute_proposal(proposal_id)
+                sse_thread.join(timeout=20)
 
-            report = get_json(base_url, f"/v1/tasks/{task_id}/report")["report"]
-            diff = get_json(base_url, f"/v1/agents/{agent_id}/git/diff")["stdout"]
+                report = client.task_report(task.id)
+                diff = client.git_diff(agent.id).stdout
             parser_text = (workspace_root / "parser.c").read_text(encoding="utf-8")
             log_lines = [line for line in Workspace(workspace_root).git.log(limit=10).stdout.splitlines() if line]
 
@@ -122,7 +114,7 @@ def main() -> None:
             if len(log_lines) != 1:
                 raise RuntimeError("demo expected no automatic Git commit")
 
-            print("\nExecution status:", execution["status"])
+            print("\nExecution status:", execution.status)
             print("\nSSE trace:")
             for event in events:
                 print(f"- {event['event_type']}: {event['summary']}")
@@ -159,8 +151,9 @@ def wait_for_health(base_url: str, timeout: float = 180.0) -> None:
     last_error = ""
     while time.monotonic() < deadline:
         try:
-            health = get_json(base_url, "/health")
-            if health.get("status") == "ok":
+            with AgentCoreClient(base_url) as client:
+                health = client.health()
+            if health.status == "ok":
                 return
         except Exception as exc:  # noqa: BLE001 - demo diagnostics should preserve the last error.
             last_error = str(exc)
@@ -168,73 +161,16 @@ def wait_for_health(base_url: str, timeout: float = 180.0) -> None:
     raise RuntimeError(f"server did not become healthy: {last_error}")
 
 
-def get_json(base_url: str, path: str) -> dict[str, Any]:
-    request = urllib.request.Request(base_url + path, method="GET")
-    return _json_response(request)
+def collect_task_events(base_url: str, task_id: str, events: list[dict[str, Any]]) -> None:
+    with AgentCoreClient(base_url) as client:
+        for event in client.stream_task_events(task_id):
+            events.append(event.as_dict())
 
 
-def post_json(base_url: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        base_url + path,
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    return _json_response(request)
-
-
-def post_sse(base_url: str, path: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        base_url + path,
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-    events: list[dict[str, Any]] = []
-    current_data: list[str] = []
-    with urllib.request.urlopen(request, timeout=300) as response:
-        for raw_line in response:
-            line = raw_line.decode("utf-8").rstrip("\n")
-            if not line:
-                if current_data:
-                    events.append(json.loads("\n".join(current_data)))
-                    current_data.clear()
-                continue
-            if line.startswith("data: "):
-                current_data.append(line[6:])
-    return events
-
-
-def _json_response(request: urllib.request.Request) -> dict[str, Any]:
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
-
-
-def collect_sse(base_url: str, task_id: str, events: list[dict[str, Any]]) -> None:
-    request = urllib.request.Request(base_url + f"/v1/tasks/{task_id}/events", method="GET")
-    current_data: list[str] = []
-    with urllib.request.urlopen(request, timeout=180) as response:
-        for raw_line in response:
-            line = raw_line.decode("utf-8").rstrip("\n")
-            if not line:
-                if current_data:
-                    events.append(json.loads("\n".join(current_data)))
-                    current_data.clear()
-                continue
-            if line.startswith("data: "):
-                current_data.append(line[6:])
-
-
-def _proposal_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _proposal_from_events(events: list[AgentEvent]) -> dict[str, Any]:
     for event in events:
-        if event.get("event_type") == "plan.proposed":
-            proposal = event.get("payload", {}).get("proposal")
+        if event.event_type == "plan.proposed":
+            proposal = event.payload.get("proposal")
             if isinstance(proposal, dict):
                 return proposal
     raise RuntimeError("streamed proposal did not produce plan.proposed")
