@@ -21,13 +21,38 @@ three installable distributions:
 - `agentcore-server`;
 - `agentclient`.
 
-This document is a migration plan only. It does not change protocol semantics or
-runtime behavior.
+This document started as a migration plan. Phase 1 and Phase 2 have extracted
+`agentcore-protocol` and `agentclient`. Phase 3 extracts the server/domain code
+into `agentcore-server` while preserving protocol semantics and runtime
+behavior.
+
+## Implementation Status
+
+Current package split:
+
+- `agentcore-protocol`: installable shared protocol/client package.
+- `agentclient`: installable lightweight remote CLI package.
+- `agentcore-server`: installable server/domain/runtime package.
+
+The server implementation now lives under:
+
+```text
+packages/agentcore-server/src/agentcore_server/
+```
+
+The legacy import path:
+
+```python
+import a100_agent_lab
+```
+
+is retained only as a deprecated compatibility shim that re-exports
+`agentcore_server`.
 
 ## Current Import Audit
 
-The current package, `a100_agent_lab`, mixes protocol, server, runtime, and CLI
-concerns.
+Historically, the `a100_agent_lab` package mixed protocol, server, runtime, and
+CLI concerns. The active implementation has now moved to `agentcore_server`.
 
 ### Protocol Types Mixed With Server Internals
 
@@ -140,16 +165,24 @@ packages/
 
   agentcore-server/
     pyproject.toml
+    config/
     src/
       agentcore_server/
         __init__.py
-        app.py
-        state.py
-        events.py
-        schemas.py
         cli.py
-      a100_agent_lab/
-        ...
+        api/
+        agents/
+        executor/
+        generation/
+        health/
+        logging/
+        planner/
+        planning/
+        runtime/
+        server/
+        sessions/
+        tasks/
+        workspace/
     tests/
       test_http_server.py
       test_runtime_contract.py
@@ -175,9 +208,8 @@ config/
 examples/
 ```
 
-During migration, keeping `a100_agent_lab` under `agentcore-server` preserves
-most file history and minimizes internal import churn. Later, once packaging is
-stable, the server internals can be renamed incrementally if needed.
+The legacy `a100_agent_lab` top-level package remains only as a deprecated
+compatibility shim. It is not a second implementation.
 
 ## Package Names And Import Names
 
@@ -231,8 +263,8 @@ import agentcore_server
 import a100_agent_lab
 ```
 
-`a100_agent_lab` can remain as the server/domain implementation package during
-the migration.
+`agentcore_server` is the canonical server/domain import. `a100_agent_lab` is a
+temporary deprecated compatibility import that re-exports `agentcore_server`.
 
 Console entry point:
 
@@ -515,18 +547,21 @@ Move remote-only CLI logic there. The new CLI must:
 The current embedded `scripts/agentcore_cli.py` may remain as a development
 command, but it should be renamed or clearly marked as local embedded mode.
 
-### Phase 4: Extract Server Package Metadata
+### Phase 4: Extract Server Package
 
-Create `packages/agentcore-server`.
+Create `packages/agentcore-server` and move server/domain code from
+`a100_agent_lab` to `agentcore_server`.
 
-Move server packaging metadata and launcher:
+Moved server scope:
 
 - `agentcore_server.cli`;
-- `agentcore_server.app`;
-- existing `a100_agent_lab` domain package;
+- `agentcore_server.server`;
+- `agentcore_server.api`;
+- domain packages for agents, sessions, tasks, workspace, executor, planner,
+  runtime adapters, health/statistics, and logging;
 - configs and examples as package data or repo-level examples.
 
-The import name `a100_agent_lab` can remain for server internals in this phase.
+The old `a100_agent_lab` import path is kept only as a warning-emitting shim.
 
 ### Phase 5: Root Monorepo Tooling
 
@@ -563,9 +598,9 @@ Recommended preservation strategy:
 - split moves and behavior changes into separate commits;
 - run tests after each phase.
 
-Large renames such as `a100_agent_lab` to `agentcore_server` should be deferred.
-They are not required for a lightweight remote client and would make history
-harder to review.
+Large renames should be isolated from behavior changes. The
+`a100_agent_lab` to `agentcore_server` rename is tracked with `git mv` and
+compatibility shims.
 
 ## Tests
 

@@ -30,6 +30,7 @@ include = ["a100_agent_lab*"]
 testpaths = ["tests"]
 pythonpath = [
   ".",
+  "packages/agentcore-server/src",
   "packages/agentcore-protocol/src",
   "packages/agentclient/src",
 ]

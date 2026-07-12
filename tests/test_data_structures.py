@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 
-from a100_agent_lab.generation.config import GenerationConfig
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.logging.events import generation_event
-from a100_agent_lab.logging.writer import JsonlWriter
-from a100_agent_lab.sessions.session import Message, Session
+from agentcore_server.generation.config import GenerationConfig
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.logging.events import generation_event
+from agentcore_server.logging.writer import JsonlWriter
+from agentcore_server.sessions.session import Message, Session
 
 
 def test_message_as_dict() -> None:

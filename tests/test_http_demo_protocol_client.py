@@ -22,10 +22,10 @@ def test_http_demo_uses_protocol_client_for_http_operations() -> None:
             imported_names.update(alias.name for alias in node.names)
 
     forbidden_prefixes = (
-        "a100_agent_lab.server",
-        "a100_agent_lab.api",
-        "a100_agent_lab.executor",
-        "a100_agent_lab.runtime",
+        "agentcore_server.server",
+        "agentcore_server.api",
+        "agentcore_server.executor",
+        "agentcore_server.runtime",
         "urllib",
     )
 

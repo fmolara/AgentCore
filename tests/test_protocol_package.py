@@ -214,7 +214,7 @@ def test_protocol_package_has_only_allowed_dependencies() -> None:
 
 def test_protocol_package_does_not_import_server_or_runtime_dependencies() -> None:
     forbidden_roots = {
-        "a100_agent_lab",
+        "agentcore_server",
         "fastapi",
         "uvicorn",
         "torch",

@@ -1,8 +1,7 @@
 # AgentCore
 
 AgentCore is an experimental platform for building persistent coding-agent
-systems on an NVIDIA A100 80GB PCIe server. The Python package is currently
-named `a100_agent_lab`.
+systems on an NVIDIA A100 80GB PCIe server.
 
 This project is not an LLM runtime. It is the application and orchestration
 layer that sits on top of existing runtimes such as:
@@ -65,7 +64,7 @@ Normal application code should interact with:
 - `Session`
 
 ```python
-from a100_agent_lab import AgentLab
+from agentcore_server import AgentLab
 
 lab = AgentLab.from_config("config/transformers-a100.yaml")
 lab.start()
@@ -83,7 +82,7 @@ The higher-level `Agent` abstraction owns one persistent session and exposes a
 simple conversational API:
 
 ```python
-from a100_agent_lab import AgentLab
+from agentcore_server import AgentLab
 
 lab = AgentLab.from_config("config/sglang-a100.yaml")
 lab.start()
@@ -188,7 +187,7 @@ AgentCore also exposes a small localhost HTTP API with Server-Sent Events for
 task execution traces:
 
 ```bash
-python scripts/agentcore_server.py \
+agentcore-server \
   --config config/sglang-a100.yaml \
   --host 127.0.0.1 \
   --port 8080
@@ -213,14 +212,18 @@ format.
 
 ## Package Layout
 
-AgentCore is moving toward a monorepo split:
+AgentCore is now organized as a monorepo with separate installable packages:
 
 - `packages/agentcore-protocol`: shared HTTP/SSE schemas, errors, event model,
   sync/async clients, and protocol version metadata.
+- `packages/agentcore-server`: server/domain/runtime package with `AgentLab`,
+  `Agent`, workspaces, tasks, planners, runtime adapters, FastAPI HTTP API, and
+  the `agentcore-server` console command.
 - `packages/agentclient`: lightweight remote terminal client. It talks only to
   an AgentCore server over HTTP/SSE and does not import server/runtime internals.
-- `a100_agent_lab`: current server/domain/runtime package. This will be split
-  into an `agentcore-server` package in a later phase.
+
+The old `a100_agent_lab` import path is retained only as a deprecated
+compatibility shim.
 
 Remote client usage:
 

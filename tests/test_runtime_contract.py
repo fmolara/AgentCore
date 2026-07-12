@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.generation.stream import StreamChunk
-from a100_agent_lab.runtime.base import Runtime
-from a100_agent_lab.sessions.session import Session
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.generation.stream import StreamChunk
+from agentcore_server.runtime.base import Runtime
+from agentcore_server.sessions.session import Session
 
 
 class FakeRuntime(Runtime):

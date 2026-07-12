@@ -12,10 +12,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages" / "agentcore-protocol" / "src"))
+sys.path.insert(0, str(ROOT / "packages" / "agentcore-server" / "src"))
+sys.path.insert(0, str(ROOT / "packages" / "agentcore-protocol" / "src"))
 sys.path.insert(0, str(ROOT))
 
 from agentcore_protocol import AgentCoreClient, AgentEvent
-from a100_agent_lab.workspace import Workspace
+from agentcore_server.workspace import Workspace
 
 
 def parse_args() -> argparse.Namespace:

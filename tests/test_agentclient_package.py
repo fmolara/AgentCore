@@ -92,7 +92,7 @@ def test_agentclient_imports_without_server_dependencies() -> None:
 
 def test_agentclient_package_does_not_import_server_or_runtime_dependencies() -> None:
     forbidden_roots = {
-        "a100_agent_lab",
+        "agentcore_server",
         "fastapi",
         "uvicorn",
         "torch",

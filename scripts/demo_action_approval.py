@@ -7,9 +7,11 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "packages" / "agentcore-server" / "src"))
+sys.path.insert(0, str(ROOT / "packages" / "agentcore-protocol" / "src"))
 sys.path.insert(0, str(ROOT))
 
-from a100_agent_lab import ActionPlan, AgentLab, TaskExecutor
+from agentcore_server import ActionPlan, AgentLab, TaskExecutor
 
 
 def parse_args() -> argparse.Namespace:

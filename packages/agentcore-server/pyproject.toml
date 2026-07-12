@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcore-server"
+version = "0.2.0"
+description = "AgentCore server, domain model, runtime adapters, and HTTP API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "agentcore-protocol>=1.0.0",
+  "PyYAML",
+]
+
+[project.scripts]
+agentcore-server = "agentcore_server.cli:main"
+
+[project.optional-dependencies]
+server = [
+  "fastapi>=0.115,<0.116",
+  "uvicorn>=0.30",
+]
+transformers = [
+  "Jinja2",
+  "torch",
+  "transformers",
+]
+sglang = [
+  "Jinja2",
+  "transformers",
+]
+lmdeploy = [
+  "Jinja2",
+  "transformers",
+]
+dev = [
+  "pytest>=8",
+  "httpx>=0.28",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/agentcore-server/config" = [
+  "config/lmdeploy-a100.yaml",
+  "config/sglang-a100.yaml",
+  "config/transformers-a100.yaml",
+]

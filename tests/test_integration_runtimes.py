@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from a100_agent_lab import AgentLab
+from agentcore_server import AgentLab
 
 
 pytestmark = pytest.mark.integration

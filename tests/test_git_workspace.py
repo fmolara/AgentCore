@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from a100_agent_lab import AgentLab
-from a100_agent_lab.sessions import Session, SessionStore
-from a100_agent_lab.workspace import GitResult, Workspace
+from agentcore_server import AgentLab
+from agentcore_server.sessions import Session, SessionStore
+from agentcore_server.workspace import GitResult, Workspace
 
 
 class FakeRuntime:

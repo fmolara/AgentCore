@@ -9,12 +9,12 @@ import httpx
 import pytest
 
 from agentcore_protocol import API_VERSION, PROTOCOL_VERSION, SCHEMA_VERSION
-from a100_agent_lab.api.client import AgentLab
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.runtime.base import Runtime
-from a100_agent_lab.server import create_app
-from a100_agent_lab.sessions import Session, SessionStore
-from a100_agent_lab.workspace import Workspace
+from agentcore_server.api.client import AgentLab
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.runtime.base import Runtime
+from agentcore_server.server import create_app
+from agentcore_server.sessions import Session, SessionStore
+from agentcore_server.workspace import Workspace
 
 
 class FakeRuntime(Runtime):
