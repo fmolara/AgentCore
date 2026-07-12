@@ -211,6 +211,27 @@ Cancellation is cooperative via `POST /v1/tasks/{task_id}/cancel`.
 See [HTTP API](docs/architecture/HTTP_API.md) for endpoint details and SSE
 format.
 
+## Package Layout
+
+AgentCore is moving toward a monorepo split:
+
+- `packages/agentcore-protocol`: shared HTTP/SSE schemas, errors, event model,
+  sync/async clients, and protocol version metadata.
+- `packages/agentclient`: lightweight remote terminal client. It talks only to
+  an AgentCore server over HTTP/SSE and does not import server/runtime internals.
+- `a100_agent_lab`: current server/domain/runtime package. This will be split
+  into an `agentcore-server` package in a later phase.
+
+Remote client usage:
+
+```bash
+agentclient --server http://127.0.0.1:8080
+agentclient --server http://192.168.1.20:8080 --workspace /srv/workspaces/demo
+```
+
+The `--workspace` value is interpreted by the server. The client does not read
+or write that path locally.
+
 ## Tests
 
 Lightweight tests do not load the 27B model and do not require a GPU:
