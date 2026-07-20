@@ -162,7 +162,8 @@ def test_invalid_commands_do_not_crash(capsys) -> None:
     with client:
         cli.run(["/not-a-command", "/quit"])
 
-    assert "Unknown command" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "Unknown command" in captured.err
 
 
 def test_workspace_path_is_request_data_only(tmp_path) -> None:
