@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import sys
+import traceback
 from typing import Any
 
 from agentcore_protocol import AgentEvent
+
+from agentclient.failures import ClientFailure
 
 try:
     from rich.console import Console
@@ -19,6 +23,7 @@ class Renderer:
     def __init__(self, *, color: bool = True, debug: bool = False) -> None:
         self.debug = debug
         self.console = Console(no_color=not color) if Console is not None else None
+        self.error_console = Console(no_color=not color, stderr=True) if Console is not None else None
 
     def header(self, text: str) -> None:
         if self.console is not None and Panel is not None:
@@ -33,10 +38,22 @@ class Renderer:
             print(text)
 
     def error(self, text: str) -> None:
-        if self.console is not None:
-            self.console.print(f"[red]{text}[/red]")
+        if self.error_console is not None:
+            self.error_console.print(text, style="red", markup=False)
         else:
-            print(f"ERROR: {text}")
+            print(f"ERROR: {text}", file=sys.stderr)
+
+    def failure(self, failure: ClientFailure) -> None:
+        self.error(failure.as_text())
+
+    def traceback(self, exc: BaseException, *, redact: str | None = None) -> None:
+        text = "".join(traceback.format_exception(exc))
+        if redact:
+            text = text.replace(redact, "<redacted-url>")
+        if self.error_console is not None:
+            self.error_console.print(text, markup=False, highlight=False)
+        else:
+            print(text, file=sys.stderr, end="" if text.endswith("\n") else "\n")
 
     def section(self, title: str, body: str) -> None:
         if self.console is not None and Panel is not None:
