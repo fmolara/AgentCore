@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 agentcore-server = "agentcore_server.cli:main"
+agentcore-local = "agentcore_server.local.cli:main"
 
 [project.optional-dependencies]
 server = [
