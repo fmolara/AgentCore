@@ -47,3 +47,31 @@ agentcore-server \
 
 The default bind host remains `127.0.0.1`. AgentCore currently has no production
 authentication layer, so do not expose the server on an untrusted network.
+
+## Local orchestration
+
+The same distribution also provides a single-process orchestration command:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100.yaml \
+  --workspace workspace/project
+```
+
+Local mode reuses the server package's domain, planner, approval, executor,
+workspace, and runtime implementations. It does not start FastAPI, use HTTP or
+SSE, import `agentclient`, or start an AgentCore server subprocess.
+
+For a proposal-only diagnostic run:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100.yaml \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --proposal-only \
+  --trace-file result.jsonl
+```
+
+Mutating actions require explicit approval, and non-interactive execution
+always requires `--approve`. Git commits are never automatic.

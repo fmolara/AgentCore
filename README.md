@@ -210,6 +210,26 @@ Cancellation is cooperative via `POST /v1/tasks/{task_id}/cancel`.
 See [HTTP API](docs/architecture/HTTP_API.md) for endpoint details and SSE
 format.
 
+## Local Mode
+
+AgentCore can also run orchestration directly in one process, without FastAPI,
+HTTP, SSE, or `agentclient`:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100.yaml \
+  --workspace workspace/project
+```
+
+The local composition reuses the same planner, proposal, approval,
+`TaskExecutor`, workspace, and runtime implementations as distributed mode.
+Proposal-only diagnostics are available with `--proposal-only` and
+`--trace-file`. Execution still requires explicit approval, and Git commits
+remain manual.
+
+See [Local Mode](docs/architecture/LOCAL_MODE.md) for topology, commands,
+diagnostics, and exit codes.
+
 ## Package Layout
 
 AgentCore is now organized as a monorepo with separate installable packages:
@@ -258,6 +278,7 @@ Milestone 1 architecture documents:
 - [Core Platform](docs/architecture/CORE_PLATFORM.md)
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
 - [Coding Workspace](docs/architecture/CODING_WORKSPACE.md)
+- [Local Mode](docs/architecture/LOCAL_MODE.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)
