@@ -220,15 +220,11 @@ class AgentCoreServerState:
     def approve_proposal(self, proposal_id: str) -> ProposalRecord:
         record = self.get_proposal(proposal_id)
         task_record = self.get_task(record.task_id)
-        if record.proposal.status != PlanProposalStatus.PROPOSED:
-            raise HTTPException(status_code=409, detail=f"proposal is {record.proposal.status.value}")
-        record.proposal.approve()
-        self.get_agent(task_record.agent_id).agent.emit_event(
-            "plan.approved",
-            f"Plan approved: {record.proposal.title}",
-            task=task_record.task,
-            payload={"proposal_id": record.proposal.id},
-        )
+        agent = self.get_agent(task_record.agent_id).agent
+        try:
+            agent.approve_proposal(task_record.task, record.proposal)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=f"proposal is {record.proposal.status.value}") from exc
         return record
 
     def reject_proposal(self, proposal_id: str, reason: str) -> ProposalRecord:
@@ -269,25 +265,12 @@ class AgentCoreServerState:
         task_record = self.get_task(task_id)
         agent = self.get_agent(task_record.agent_id).agent
         task = task_record.task
-        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
-            raise HTTPException(status_code=409, detail=f"task is already {task.status.value}")
-        task.request_cancellation(reason)
-        agent.emit_event(
-            "cancellation.requested",
-            f"Cancellation requested for task: {task.title}",
-            task=task,
-            payload={"reason": reason},
-        )
         with self._lock:
             executing = task_id in self._executing_tasks
-        if not executing and task.status == TaskStatus.CREATED:
-            task.cancel(reason)
-            agent.emit_event(
-                "cancellation.completed",
-                f"Cancellation completed for task: {task.title}",
-                task=task,
-                payload={"reason": reason, "actions": 0},
-            )
+        try:
+            agent.cancel_task(task, reason, executing=executing)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return task_record
 
     def _workspace_root(self, agent_id: str, requested: str | None) -> Path | None:

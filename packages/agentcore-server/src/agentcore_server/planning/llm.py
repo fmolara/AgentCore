@@ -61,7 +61,7 @@ class SimpleLLMPlanner:
         approval_policy: ApprovalPolicy | None = None,
         **generation_options: Any,
     ) -> PlannerResult:
-        prompt = self._prompt(agent, task, instruction)
+        prompt = self.build_prompt(agent, task, instruction)
         options = {
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -97,7 +97,7 @@ class SimpleLLMPlanner:
         approval_policy: ApprovalPolicy | None = None,
         **generation_options: Any,
     ):
-        prompt = self._prompt(agent, task, instruction)
+        prompt = self.build_prompt(agent, task, instruction)
         options = {
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -160,7 +160,7 @@ class SimpleLLMPlanner:
         yield proposed
         return result
 
-    def _prompt(self, agent, task: Task, instruction: str) -> str:
+    def build_prompt(self, agent, task: Task, instruction: str) -> str:
         workspace_listing = ", ".join(agent.workspace.list(".")) if agent.workspace.exists(".") else ""
         git_status = agent.git.status().stdout if agent.git.is_repo() else ""
         return (
@@ -176,6 +176,9 @@ class SimpleLLMPlanner:
             + "\n\nUser instruction:\n"
             + instruction
         )
+
+    def _prompt(self, agent, task: Task, instruction: str) -> str:
+        return self.build_prompt(agent, task, instruction)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

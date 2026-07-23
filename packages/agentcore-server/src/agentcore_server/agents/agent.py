@@ -14,6 +14,7 @@ from agentcore_server.tasks import (
     TaskCheckpointRestorePlan,
     TaskCheckpointRestoreResult,
     TaskReport,
+    TaskStatus,
 )
 from agentcore_server.workspace import Workspace
 
@@ -203,16 +204,27 @@ class Agent:
             from agentcore_server.executor import PlanProposalStatus
 
             if proposal.status == PlanProposalStatus.PROPOSED:
-                proposal.approve()
-                self.emit_event(
-                    "plan.approved",
-                    f"Plan approved: {proposal.title}",
-                    task=task,
-                    payload={"proposal_id": proposal.id},
-                )
+                self.approve_proposal(task, proposal)
         from agentcore_server.executor import TaskExecutor
 
         return proposal.execute(TaskExecutor(self), task)
+
+    def approve_proposal(self, task: Task, proposal: Any) -> None:
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this agent")
+        if proposal.task_id != task.id:
+            raise ValueError("proposal task_id does not match task")
+        from agentcore_server.executor import PlanProposalStatus
+
+        if proposal.status != PlanProposalStatus.PROPOSED:
+            raise ValueError(f"cannot approve proposal with status: {proposal.status.value}")
+        proposal.approve()
+        self.emit_event(
+            "plan.approved",
+            f"Plan approved: {proposal.title}",
+            task=task,
+            payload={"proposal_id": proposal.id},
+        )
 
     def reject_proposal(self, task: Task, proposal: Any, reason: str) -> None:
         if task not in self._tasks:
@@ -224,6 +236,28 @@ class Agent:
             task=task,
             payload={"proposal_id": proposal.id, "reason": reason},
         )
+
+    def cancel_task(self, task: Task, reason: str, *, executing: bool = False) -> Task:
+        if task not in self._tasks:
+            raise ValueError("task is not owned by this agent")
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            raise ValueError(f"task is already {task.status.value}")
+        task.request_cancellation(reason)
+        self.emit_event(
+            "cancellation.requested",
+            f"Cancellation requested for task: {task.title}",
+            task=task,
+            payload={"reason": reason},
+        )
+        if not executing and task.status == TaskStatus.CREATED:
+            task.cancel(reason)
+            self.emit_event(
+                "cancellation.completed",
+                f"Cancellation completed for task: {task.title}",
+                task=task,
+                payload={"reason": reason, "actions": 0},
+            )
+        return task
 
     def emit_event(
         self,
