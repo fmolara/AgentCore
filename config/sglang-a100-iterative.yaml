@@ -28,6 +28,8 @@ planner:
     max_total_actions: 20
     max_directory_depth: 4
     max_files_returned: 100
+    max_search_files_scanned: 1000
+    max_search_bytes: 4194304
     max_single_file_bytes: 65536
     max_total_observation_bytes: 262144
     max_observation_text_per_action: 65536

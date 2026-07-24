@@ -200,12 +200,30 @@ class WorkspaceExplorer:
         skipped_encoding: list[str] = []
         skipped_symlink: list[str] = []
         truncated = False
+        truncation_reasons: set[str] = set()
+        files_scanned = 0
+        content_bytes_scanned = 0
         for path in self._iter_search_files(root, skipped_symlink):
+            if files_scanned >= self.limits.max_search_files_scanned:
+                truncated = True
+                truncation_reasons.add("max_search_files_scanned")
+                break
+            files_scanned += 1
             relative = path.relative_to(self.workspace.root).as_posix()
             if not fnmatch.fnmatch(path.name, action.name_pattern):
                 continue
             if action.content_query is not None:
-                status, found, was_truncated = self._contains_text(path, action.content_query)
+                remaining_bytes = self.limits.max_search_bytes - content_bytes_scanned
+                if remaining_bytes <= 0:
+                    truncated = True
+                    truncation_reasons.add("max_search_bytes")
+                    break
+                status, found, was_truncated, bytes_read = self._contains_text(
+                    path,
+                    action.content_query,
+                    max_bytes=remaining_bytes,
+                )
+                content_bytes_scanned += bytes_read
                 if status == "binary":
                     skipped_binary.append(relative)
                     continue
@@ -213,12 +231,24 @@ class WorkspaceExplorer:
                     skipped_encoding.append(relative)
                     continue
                 if not found:
+                    if content_bytes_scanned >= self.limits.max_search_bytes:
+                        truncated = True
+                        truncation_reasons.add("max_search_bytes")
+                        break
                     continue
             else:
                 was_truncated = False
             matches.append({"path": relative, "content_scan_truncated": was_truncated})
             if len(matches) >= action.max_results:
                 truncated = True
+                truncation_reasons.add("max_results")
+                break
+            if (
+                action.content_query is not None
+                and content_bytes_scanned >= self.limits.max_search_bytes
+            ):
+                truncated = True
+                truncation_reasons.add("max_search_bytes")
                 break
 
         return ExplorationObservation.ok(
@@ -234,6 +264,11 @@ class WorkspaceExplorer:
                 "pattern_semantics": "glob against basename",
                 "hidden_files": "excluded",
                 "max_directory_depth": self.limits.max_directory_depth,
+                "files_scanned": files_scanned,
+                "content_bytes_scanned": content_bytes_scanned,
+                "max_search_files_scanned": self.limits.max_search_files_scanned,
+                "max_search_bytes": self.limits.max_search_bytes,
+                "truncation_reasons": sorted(truncation_reasons),
             },
             truncated=truncated,
         )
@@ -272,22 +307,28 @@ class WorkspaceExplorer:
                     continue
                 yield path
 
-    def _contains_text(self, path: Path, query: str) -> tuple[str, bool, bool]:
-        limit = self.limits.max_single_file_bytes
+    def _contains_text(
+        self,
+        path: Path,
+        query: str,
+        *,
+        max_bytes: int,
+    ) -> tuple[str, bool, bool, int]:
+        limit = min(self.limits.max_single_file_bytes, max_bytes)
         try:
             with path.open("rb") as stream:
                 raw = stream.read(limit + 1)
         except OSError:
-            return "encoding", False, False
+            return "encoding", False, False, 0
         truncated = len(raw) > limit
         raw = raw[:limit]
         if b"\0" in raw:
-            return "binary", False, truncated
+            return "binary", False, truncated, len(raw)
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            return "encoding", False, truncated
-        return "text", query in text, truncated
+            return "encoding", False, truncated, len(raw)
+        return "text", query in text, truncated, len(raw)
 
     def _read_file(self, action: ExploreReadFileAction) -> ExplorationObservation:
         path = self.workspace._resolve(action.path)

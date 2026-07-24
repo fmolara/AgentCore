@@ -20,6 +20,8 @@ class ExplorationLimits:
     max_total_actions: int = 20
     max_directory_depth: int = 4
     max_files_returned: int = 100
+    max_search_files_scanned: int = 1000
+    max_search_bytes: int = 4 * 1024 * 1024
     max_single_file_bytes: int = 64 * 1024
     max_total_observation_bytes: int = 256 * 1024
     max_observation_text_per_action: int = 64 * 1024

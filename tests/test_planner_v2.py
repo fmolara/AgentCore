@@ -608,6 +608,42 @@ def test_search_reports_binary_encoding_and_symlink_skips(tmp_path) -> None:
     assert data["skipped_symlink"] == ["link.dat"]
 
 
+def test_search_caps_total_files_and_content_bytes(tmp_path) -> None:
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.mkdir("src")
+    for index in range(5):
+        workspace.write_text(f"src/{index}.c", "x" * 32)
+    limits = ExplorationLimits(
+        max_search_files_scanned=2,
+        max_search_bytes=40,
+        max_single_file_bytes=32,
+    )
+    plan = ExplorationPlan.from_dict(
+        {
+            "phase": "explore",
+            "summary": "Bounded search",
+            "actions": [
+                {
+                    "type": "search_files",
+                    "root": "src",
+                    "name_pattern": "*.c",
+                    "content_query": "not-present",
+                    "max_results": 10,
+                }
+            ],
+        },
+        limits=limits,
+    )
+
+    observations, _ = WorkspaceExplorer(workspace, limits=limits).execute(plan)
+    observation = observations[0]
+
+    assert observation.truncated is True
+    assert observation.data["files_scanned"] == 2
+    assert observation.data["content_bytes_scanned"] == 40
+    assert observation.data["truncation_reasons"] == ["max_search_bytes"]
+
+
 def test_planning_does_not_invoke_task_executor(tmp_path, monkeypatch) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

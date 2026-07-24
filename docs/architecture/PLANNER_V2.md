@@ -71,13 +71,16 @@ planner:
     max_total_actions: 20
     max_directory_depth: 4
     max_files_returned: 100
+    max_search_files_scanned: 1000
+    max_search_bytes: 4194304
     max_single_file_bytes: 65536
     max_total_observation_bytes: 262144
     max_observation_text_per_action: 65536
 ```
 
 Results are deterministic: traversal and matches are sorted, file reads are
-bounded, and truncation is explicit.
+bounded, and truncation is explicit. Content search also caps the total files
+examined and aggregate bytes read, including searches that return no matches.
 
 Before each model call, the planner tokenizes the complete stateless request
 and caps `max_tokens` to the configured context window minus a small safety
