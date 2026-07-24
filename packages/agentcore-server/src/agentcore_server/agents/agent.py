@@ -33,6 +33,7 @@ class Agent:
         workspace_root: str | Path | None = None,
         workspace_mode: str = Workspace.READ_WRITE,
         workspace_metadata: dict[str, Any] | None = None,
+        workspace_checks: dict[str, Any] | None = None,
         generation_options: dict[str, Any] | None = None,
         event_sink: Any | None = None,
         **kwargs: Any,
@@ -43,6 +44,7 @@ class Agent:
             workspace_root or lab.default_workspace_root(),
             mode=workspace_mode,
             metadata=workspace_metadata,
+            checks=workspace_checks,
         )
         self.generation_options = dict(generation_options or {})
         self.generation_options.update({key: value for key, value in kwargs.items() if value is not None})
@@ -70,15 +72,38 @@ class Agent:
         return None if self._last_result is None else self._last_result.metrics
 
     def ask(self, prompt: str, **kwargs: Any) -> GenerationResult:
+        return self._ask_with_session(self.session, prompt, **kwargs)
+
+    def _ask_with_session(
+        self,
+        session: Session,
+        prompt: str,
+        **kwargs: Any,
+    ) -> GenerationResult:
         options = self._merged_options(kwargs)
-        result = self.lab.generate(self.session, prompt, **options)
+        result = self.lab.generate(session, prompt, **options)
         self._record_result(result)
         return result
 
     def stream(self, prompt: str, *, task: Task | None = None, **kwargs: Any) -> Iterator[AgentEvent]:
+        yield from self._stream_with_session(
+            self.session,
+            prompt,
+            task=task,
+            **kwargs,
+        )
+
+    def _stream_with_session(
+        self,
+        session: Session,
+        prompt: str,
+        *,
+        task: Task | None = None,
+        **kwargs: Any,
+    ) -> Iterator[AgentEvent]:
         options = self._merged_options(kwargs)
         try:
-            for chunk in self.lab.stream(self.session, prompt, **options):
+            for chunk in self.lab.stream(session, prompt, **options):
                 event = self._assistant_event(chunk, task=task)
                 if chunk.chunk_type == "completed" and chunk.metrics is not None:
                     self._record_result(GenerationResult(text=chunk.text, metrics=chunk.metrics))

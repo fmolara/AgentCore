@@ -8,7 +8,7 @@ from agentcore_server.agents import Agent
 from agentcore_server.api.client import AgentLab
 from agentcore_server.events import AgentEvent, EventSink
 from agentcore_server.executor import ApprovalPolicy, PlanProposal, TaskExecutionResult
-from agentcore_server.planning import PlannerResult, SimpleLLMPlanner
+from agentcore_server.planning import PlannerResult, build_planner
 from agentcore_server.tasks import Task, TaskReport
 
 
@@ -45,13 +45,17 @@ class LocalAgentCoreApp:
         *,
         workspace: str,
         system_prompt: str | None = None,
-        planner: SimpleLLMPlanner | None = None,
+        planner: Any | None = None,
+        planner_mode: str | None = None,
         approval_policy: ApprovalPolicy | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
         self.lab = lab
         self.event_sink = event_sink
-        self.planner = planner or SimpleLLMPlanner()
+        self.planner = planner or build_planner(
+            lab.config,
+            mode_override=planner_mode,
+        )
         self.approval_policy = approval_policy or ApprovalPolicy.default()
         self.agent: Agent = lab.create_agent(
             system_prompt=system_prompt,
@@ -103,13 +107,17 @@ class LocalAgentCoreApp:
         stream: bool = True,
         **generation_options: Any,
     ) -> PlannerResult:
-        prompt = self.planner.build_prompt(self.agent, task, instruction)
-        self._emit(
-            "planner.prompt",
-            "Effective planner prompt prepared",
-            task,
-            {"prompt": prompt, "sanitized": True},
+        managed_diagnostics = bool(
+            getattr(self.planner, "diagnostics_managed", False)
         )
+        if not managed_diagnostics:
+            prompt = self.planner.build_prompt(self.agent, task, instruction)
+            self._emit(
+                "planner.prompt",
+                "Effective planner prompt prepared",
+                task,
+                {"prompt": prompt, "sanitized": True},
+            )
         if stream:
             iterator = self.agent.propose_plan_stream(
                 task,
@@ -127,33 +135,35 @@ class LocalAgentCoreApp:
                 approval_policy=self.approval_policy,
                 **generation_options,
             )
-        self._emit(
-            "planner.raw_output",
-            "Visible final model output captured",
-            task,
-            {"text": result.raw_text, "content_kind": "visible_model_text"},
-        )
-        self._emit("planner.result", "Planner result parsed", task, result.as_dict())
+        if not managed_diagnostics:
+            self._emit(
+                "planner.raw_output",
+                "Visible final model output captured",
+                task,
+                {"text": result.raw_text, "content_kind": "visible_model_text"},
+            )
+            self._emit("planner.result", "Planner result parsed", task, result.as_dict())
         self._validate_result(result, task)
         proposal = result.proposal
         assert proposal is not None
-        self._emit(
-            "planner.validation",
-            "ActionPlan structural validation passed",
-            task,
-            {"warnings": [], "action_count": len(proposal.action_plan.actions)},
-        )
-        self._emit(
-            "approval.policy",
-            "Approval policy evaluated",
-            task,
-            {
-                "requirements": [
-                    requirement.as_dict() for requirement in proposal.approval_requirements
-                ],
-                "explicit_local_approval_required": True,
-            },
-        )
+        if not managed_diagnostics:
+            self._emit(
+                "planner.validation",
+                "ActionPlan structural validation passed",
+                task,
+                {"warnings": [], "action_count": len(proposal.action_plan.actions)},
+            )
+            self._emit(
+                "approval.policy",
+                "Approval policy evaluated",
+                task,
+                {
+                    "requirements": [
+                        requirement.as_dict() for requirement in proposal.approval_requirements
+                    ],
+                    "explicit_local_approval_required": True,
+                },
+            )
         return result
 
     def approve(self, task: Task, proposal: PlanProposal) -> None:

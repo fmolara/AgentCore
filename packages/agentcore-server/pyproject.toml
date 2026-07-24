@@ -47,5 +47,6 @@ where = ["src"]
 "share/agentcore-server/config" = [
   "config/lmdeploy-a100.yaml",
   "config/sglang-a100.yaml",
+  "config/sglang-a100-iterative.yaml",
   "config/transformers-a100.yaml",
 ]

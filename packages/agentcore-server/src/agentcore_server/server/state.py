@@ -13,6 +13,7 @@ from agentcore_server.api.client import AgentLab
 from agentcore_server.agents import Agent
 from agentcore_server.executor import PlanProposalStatus, TaskExecutor
 from agentcore_server.planning import PlannerResult
+from agentcore_server.planning import build_planner
 from agentcore_server.server.events import ServerEventSink, TaskEventBus
 from agentcore_server.tasks import Task, TaskStatus
 
@@ -51,6 +52,7 @@ class AgentCoreServerState:
         self.warmup_enabled = warmup
         self.start_runtime = start_runtime
         self.events = TaskEventBus()
+        self.planner = build_planner(lab.config)
         self._lock = RLock()
         self._started = False
         self._agents: dict[str, AgentRecord] = {}
@@ -166,6 +168,7 @@ class AgentCoreServerState:
         result = agent.propose_plan(
             task_record.task,
             instruction=instruction,
+            planner=self.planner,
             max_tokens=max_tokens,
             temperature=temperature,
         )
@@ -191,6 +194,7 @@ class AgentCoreServerState:
         iterator = agent.propose_plan_stream(
             task_record.task,
             instruction=instruction,
+            planner=self.planner,
             max_tokens=max_tokens,
             temperature=temperature,
         )

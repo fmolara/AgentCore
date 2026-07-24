@@ -72,6 +72,7 @@ class AgentLab:
         workspace_root: str | Path | None = None,
         workspace_mode: str = Workspace.READ_WRITE,
         workspace_metadata: dict[str, Any] | None = None,
+        workspace_checks: dict[str, Any] | None = None,
         generation_options: dict[str, Any] | None = None,
         event_sink: Any | None = None,
         **kwargs: Any,
@@ -84,6 +85,11 @@ class AgentLab:
             workspace_root=workspace_root,
             workspace_mode=workspace_mode,
             workspace_metadata=workspace_metadata,
+            workspace_checks=(
+                self.workspace_checks()
+                if workspace_checks is None
+                else workspace_checks
+            ),
             generation_options=generation_options,
             event_sink=event_sink,
             **kwargs,
@@ -95,6 +101,15 @@ class AgentLab:
         if not root.is_absolute():
             root = self.project_root / root
         return root
+
+    def workspace_checks(self) -> dict[str, Any]:
+        workspace_cfg = self.config.get("workspace", {})
+        if not isinstance(workspace_cfg, dict):
+            raise ValueError("workspace configuration must be a mapping")
+        checks = workspace_cfg.get("checks", {})
+        if not isinstance(checks, dict):
+            raise ValueError("workspace checks configuration must be a mapping")
+        return checks
 
     def generate(self, session: Session, prompt: str, **kwargs: Any) -> GenerationResult:
         return self.runtime.generate(session, prompt, **kwargs)

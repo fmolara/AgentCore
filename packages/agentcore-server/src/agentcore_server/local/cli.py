@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, help="AgentCore runtime configuration")
     parser.add_argument("--workspace", required=True, help="Local workspace root")
     parser.add_argument("--system-prompt", default="You are a concise coding agent.")
+    parser.add_argument(
+        "--planner",
+        choices=("simple", "iterative"),
+        help="Override planner.mode from configuration",
+    )
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Task instruction")
     prompt_group.add_argument("--prompt-file", help="Read the task instruction from a UTF-8 file")
@@ -94,6 +99,7 @@ def run_cli(
             lab,
             workspace=args.workspace,
             system_prompt=args.system_prompt,
+            planner_mode=args.planner,
             event_sink=sink,
         )
     except Exception as exc:

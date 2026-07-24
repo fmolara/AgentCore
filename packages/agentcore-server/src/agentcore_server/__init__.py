@@ -13,12 +13,20 @@ from .executor import (
     PlanProposalStatus,
     ReadFileAction,
     ReplaceTextAction,
+    RunCheckAction,
     TaskExecutionResult,
     TaskExecutor,
     TaskReportAction,
     WriteFileAction,
 )
-from .planning import Planner, PlannerResult, SimpleLLMPlanner
+from .planning import (
+    ExplorationLimits,
+    IterativeLLMPlanner,
+    Planner,
+    PlannerResult,
+    SimpleLLMPlanner,
+    build_planner,
+)
 from .tasks import (
     Task,
     TaskCheckpoint,
@@ -48,7 +56,11 @@ __all__ = [
     "ListEventSink",
     "ReadFileAction",
     "ReplaceTextAction",
+    "RunCheckAction",
     "SimpleLLMPlanner",
+    "ExplorationLimits",
+    "IterativeLLMPlanner",
+    "build_planner",
     "StreamChunk",
     "Task",
     "TaskCheckpoint",
