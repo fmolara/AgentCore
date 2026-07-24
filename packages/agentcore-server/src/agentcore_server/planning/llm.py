@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from agentcore_server.events import AgentEvent
 from agentcore_server.executor import ActionPlan, ApprovalPolicy, PlanProposal
 from agentcore_server.generation.result import GenerationMetrics
 from agentcore_server.planning.planner import PlannerResult
+from agentcore_server.planning.json_output import parse_json_object
 from agentcore_server.tasks import Task
 
 PLANNER_SYSTEM_PROMPT = """You are AgentCore's plan proposal generator.
@@ -71,7 +71,7 @@ class SimpleLLMPlanner:
         result = agent.ask(prompt, **options)
         raw_text = result.text.strip()
         try:
-            data = _parse_json_object(raw_text)
+            data = parse_json_object(raw_text)
             plan = ActionPlan.from_dict(data)
             proposal = PlanProposal.from_action_plan(
                 task_id=task.id,
@@ -121,7 +121,7 @@ class SimpleLLMPlanner:
 
         raw_text = (completed_text or "".join(chunks)).strip()
         try:
-            data = _parse_json_object(raw_text)
+            data = parse_json_object(raw_text)
             plan = ActionPlan.from_dict(data)
             proposal = PlanProposal.from_action_plan(
                 task_id=task.id,
@@ -179,24 +179,6 @@ class SimpleLLMPlanner:
 
     def _prompt(self, agent, task: Task, instruction: str) -> str:
         return self.build_prompt(agent, task, instruction)
-
-
-def _parse_json_object(text: str) -> dict[str, Any]:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        data = json.loads(_extract_json_object(text))
-    if not isinstance(data, dict):
-        raise ValueError("planner output must be a JSON object")
-    return data
-
-
-def _extract_json_object(text: str) -> str:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("planner output is not valid JSON")
-    return text[start : end + 1]
 
 
 def _metrics_from_payload(data: Any) -> GenerationMetrics | None:
