@@ -227,8 +227,28 @@ Proposal-only diagnostics are available with `--proposal-only` and
 `--trace-file`. Execution still requires explicit approval, and Git commits
 remain manual.
 
+Planner v2 can perform bounded read-only discovery before producing the final
+proposal:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100-iterative.yaml \
+  --planner iterative \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --proposal-only \
+  --trace-file result.jsonl
+```
+
+`simple` remains the compatibility default. Iterative discovery is bounded,
+observable, and shared by local and distributed composition roots. Build and
+test execution is available only through trusted symbolic `run_check`
+configuration and requires explicit approval.
+
 See [Local Mode](docs/architecture/LOCAL_MODE.md) for topology, commands,
 diagnostics, and exit codes.
+See [Planner v2](docs/architecture/PLANNER_V2.md) for exploration limits,
+event separation, final-plan validation, and configured checks.
 
 ## Package Layout
 
@@ -279,6 +299,7 @@ Milestone 1 architecture documents:
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
 - [Coding Workspace](docs/architecture/CODING_WORKSPACE.md)
 - [Local Mode](docs/architecture/LOCAL_MODE.md)
+- [Planner v2](docs/architecture/PLANNER_V2.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)

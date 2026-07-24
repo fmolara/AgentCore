@@ -75,3 +75,19 @@ agentcore-local \
 
 Mutating actions require explicit approval, and non-interactive execution
 always requires `--approve`. Git commits are never automatic.
+
+Bounded workspace exploration is opt-in:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100-iterative.yaml \
+  --planner iterative \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --proposal-only \
+  --trace-file result.jsonl
+```
+
+The model may request only bounded `list_directory`, `search_files`, and
+`read_file` exploration. Configured build/test commands are exposed later as
+symbolic `run_check` actions and still require explicit approval.

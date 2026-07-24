@@ -15,7 +15,7 @@ One process owns AgentCore orchestration, including:
 - runtime lifecycle;
 - `Agent` and `Session`;
 - `Task`;
-- `SimpleLLMPlanner`;
+- `SimpleLLMPlanner` or bounded `IterativeLLMPlanner`;
 - `PlanProposal` and `ApprovalPolicy`;
 - `TaskExecutor`;
 - workspace, files, and local Git;
@@ -144,6 +144,11 @@ The trace may include:
 - execution events, `TaskReport`, and Git diff.
 
 It does not request, expose, or store hidden chain-of-thought.
+
+Use `--planner iterative` to override the configuration for a bounded
+workspace-exploration and replanning run. Assistant events remain visible
+model text; exploration and replanning use separate structured lifecycle
+events. See [Planner v2](PLANNER_V2.md).
 
 ## Exit Codes
 
