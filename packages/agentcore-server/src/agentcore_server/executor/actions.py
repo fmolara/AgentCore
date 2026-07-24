@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
+from agentcore_server.workspace.checks import CheckExecutionError
+
 if TYPE_CHECKING:
     from agentcore_server.executor.executor import TaskExecutionContext
 
@@ -31,12 +33,20 @@ class ActionResult:
         )
 
     @classmethod
-    def failed(cls, *, action_id: str, action_type: str, error: str) -> "ActionResult":
+    def failed(
+        cls,
+        *,
+        action_id: str,
+        action_type: str,
+        error: str,
+        data: dict[str, Any] | None = None,
+    ) -> "ActionResult":
         return cls(
             action_id=action_id,
             action_type=action_type,
             status="failed",
             timestamp=datetime.now(timezone.utc).isoformat(),
+            data=deepcopy(data or {}),
             error=error,
         )
 
@@ -215,4 +225,26 @@ class TaskReportAction:
             action_id=self.id,
             action_type=self.action_type,
             data={"report": context.task.report().as_dict()},
+        )
+
+
+@dataclass(frozen=True)
+class RunCheckAction:
+    check: str
+    id: str = field(default_factory=lambda: uuid4().hex)
+
+    @property
+    def action_type(self) -> str:
+        return "run_check"
+
+    def execute(self, context: TaskExecutionContext) -> ActionResult:
+        if context.agent.workspace.read_only:
+            raise PermissionError("run_check is not allowed in a read-only workspace")
+        result = context.agent.workspace.checks.run(self.check)
+        if not result.ok:
+            raise CheckExecutionError(result)
+        return ActionResult.ok(
+            action_id=self.id,
+            action_type=self.action_type,
+            data={"check": result.as_dict()},
         )

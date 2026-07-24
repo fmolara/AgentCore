@@ -15,6 +15,7 @@ class Workspace:
         cwd: str | Path | None = None,
         mode: str = READ_WRITE,
         metadata: dict[str, Any] | None = None,
+        checks: dict[str, Any] | None = None,
         create: bool = True,
     ):
         if mode not in {self.READ_ONLY, self.READ_WRITE}:
@@ -41,9 +42,11 @@ class Workspace:
             raise NotADirectoryError(f"workspace cwd is not a directory: {self.cwd}")
         from agentcore_server.workspace.files import FileWorkspace
         from agentcore_server.workspace.git import GitWorkspace
+        from agentcore_server.workspace.checks import WorkspaceCheckRunner
 
         self.files = FileWorkspace(self)
         self.git = GitWorkspace(self)
+        self.checks = WorkspaceCheckRunner.from_config(self.root, checks)
 
     @property
     def read_only(self) -> bool:

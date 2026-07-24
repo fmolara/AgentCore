@@ -6,11 +6,17 @@ from agentcore_server.executor.actions import (
     GitStatusAction,
     ReadFileAction,
     ReplaceTextAction,
+    RunCheckAction,
     TaskReportAction,
     WriteFileAction,
 )
 from agentcore_server.executor.executor import TaskExecutionResult, TaskExecutor
-from agentcore_server.executor.plan import ActionPlan, ApprovalPolicy, ApprovalRequirement
+from agentcore_server.executor.plan import (
+    ActionPlan,
+    ApprovalPolicy,
+    ApprovalRequirement,
+    action_to_dict,
+)
 from agentcore_server.executor.proposal import PlanProposal, PlanProposalStatus
 
 __all__ = [
@@ -26,8 +32,10 @@ __all__ = [
     "PlanProposalStatus",
     "ReadFileAction",
     "ReplaceTextAction",
+    "RunCheckAction",
     "TaskExecutionResult",
     "TaskExecutor",
     "TaskReportAction",
     "WriteFileAction",
+    "action_to_dict",
 ]

@@ -16,12 +16,15 @@ from agentcore_server.executor.actions import (
     GitStatusAction,
     ReadFileAction,
     ReplaceTextAction,
+    RunCheckAction,
     TaskReportAction,
     WriteFileAction,
 )
 
 READONLY_ACTION_TYPES = frozenset({"read_file", "git_status", "git_diff", "task_report"})
-MUTATING_ACTION_TYPES = frozenset({"write_file", "replace_text", "create_checkpoint"})
+MUTATING_ACTION_TYPES = frozenset(
+    {"write_file", "replace_text", "create_checkpoint", "run_check"}
+)
 GIT_ACTION_TYPES = frozenset({"git_status", "git_diff"})
 
 
@@ -213,6 +216,12 @@ def action_from_dict(data: dict[str, Any]) -> Action:
     if action_type == "task_report":
         _reject_unknown_fields(data, {"type", "id"})
         return TaskReportAction(id=_optional_id(data))
+    if action_type == "run_check":
+        _reject_unknown_fields(data, {"type", "id", "check"})
+        return RunCheckAction(
+            check=_required_str(data, "check"),
+            id=_optional_id(data),
+        )
     raise ValueError(f"unknown action type: {action_type}")
 
 
@@ -247,6 +256,8 @@ def action_to_dict(action: Action) -> dict[str, Any]:
         return data
     if isinstance(action, (GitStatusAction, GitDiffAction, TaskReportAction)):
         return {"type": action.action_type, "id": action.id}
+    if isinstance(action, RunCheckAction):
+        return {"type": action.action_type, "id": action.id, "check": action.check}
     raise ValueError(f"unsupported action instance: {type(action).__name__}")
 
 

@@ -78,6 +78,7 @@ class TaskExecutor:
                     action_id=action.id,
                     action_type=action.action_type,
                     error=str(exc),
+                    data=getattr(exc, "action_data", None),
                 )
                 self._record_action(task, result)
                 self._emit_action_event(task, result)
