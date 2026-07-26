@@ -121,6 +121,25 @@ agentcore-local \
 non-interactive execution requires the visible `--approve` flag, including a
 plan that contains only read-only actions.
 
+## Prompt Sources And Interactive Approval
+
+`--prompt` and `--prompt-file` are mutually exclusive. A prompt file is decoded
+as UTF-8 and its multiline contents, indentation, blank lines, non-ASCII text,
+and final newline are retained as the single task instruction.
+
+When either option is supplied without `--proposal-only` or `--approve`, the
+runner generates and displays the proposal and then enters the normal command
+loop. Approval remains an explicit `/approve` command. EOF after proposal
+generation does not execute the proposal and returns the approval-required
+outcome. EOF before a task is entered exits without creating one.
+
+`TaskReport` serializations include additive `final` and `lifecycle_phase`
+fields. Reports captured while an action is running are non-final snapshots;
+the orchestrator's report after a completed, failed, or cancelled transition
+is authoritative. Legacy serialized plans containing `task_report` remain
+executable, but planners no longer advertise that action because final report
+generation is an orchestration responsibility.
+
 ## Proposal Diagnostics
 
 An ordered public trace can be written as JSONL:

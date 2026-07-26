@@ -73,6 +73,11 @@ agentcore-local \
   --trace-file result.jsonl
 ```
 
+Without `--proposal-only` or `--approve`, `--prompt` and `--prompt-file` seed
+the task and then enter the normal interactive command loop. The file is read
+as UTF-8 and preserved exactly. Use `/approve` or `/reject` after reviewing the
+proposal. The two prompt options are mutually exclusive.
+
 Mutating actions require explicit approval, and non-interactive execution
 always requires `--approve`. Git commits are never automatic.
 

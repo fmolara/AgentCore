@@ -227,6 +227,11 @@ Proposal-only diagnostics are available with `--proposal-only` and
 `--trace-file`. Execution still requires explicit approval, and Git commits
 remain manual.
 
+A task supplied with `--prompt` or `--prompt-file` enters the interactive
+command loop unless `--proposal-only` or the explicit non-interactive
+`--approve` flag is present. This supports reviewing a multiline prompt-file
+proposal before entering `/approve` or `/reject`.
+
 Planner v2 can perform bounded read-only discovery before producing the final
 proposal:
 
