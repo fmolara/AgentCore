@@ -122,6 +122,13 @@ def test_task_executor_runs_actions_and_completes_task(tmp_path, monkeypatch) ->
     assert "+    return 1;" in agent.git.diff().stdout
     assert result.report is not None
     assert result.report.status == "completed"
+    snapshot = result.actions[-1].data
+    assert snapshot["report_kind"] == "intermediate_snapshot"
+    assert snapshot["report"]["status"] == "running"
+    assert snapshot["report"]["final"] is False
+    assert snapshot["report"]["lifecycle_phase"] == "running"
+    assert result.report.final is True
+    assert result.report.lifecycle_phase == "completed"
     assert agent.git.current_commit() == commit_before
 
 

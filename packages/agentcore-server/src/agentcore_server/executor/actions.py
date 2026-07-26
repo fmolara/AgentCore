@@ -221,10 +221,14 @@ class TaskReportAction:
         return "task_report"
 
     def execute(self, context: TaskExecutionContext) -> ActionResult:
+        report = context.task.report()
         return ActionResult.ok(
             action_id=self.id,
             action_type=self.action_type,
-            data={"report": context.task.report().as_dict()},
+            data={
+                "report": report.as_dict(),
+                "report_kind": "intermediate_snapshot",
+            },
         )
 
 

@@ -21,7 +21,6 @@ Allowed action types and schemas:
 - create_checkpoint: {"type":"create_checkpoint","label":"short label","description":"optional text"}
 - git_status: {"type":"git_status"}
 - git_diff: {"type":"git_diff"}
-- task_report: {"type":"task_report"}
 
 Forbidden:
 - shell commands

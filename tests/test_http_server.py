@@ -185,6 +185,8 @@ async def test_approval_then_execution_succeeds_and_git_diff_reports_change(tmp_
     assert approved.status_code == 200
     assert executed.status_code == 200
     assert executed.json()["status"] == "completed"
+    assert executed.json()["report"]["final"] is True
+    assert executed.json()["report"]["lifecycle_phase"] == "completed"
     assert "return 1;" in (workspace / "parser.c").read_text(encoding="utf-8")
     assert "+    return 1;" in diff.json()["stdout"]
 
@@ -210,6 +212,8 @@ async def test_task_report_endpoint(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["report"]["id"] == task_id
+    assert response.json()["report"]["final"] is False
+    assert response.json()["report"]["lifecycle_phase"] == "created"
 
 
 @pytest.mark.anyio

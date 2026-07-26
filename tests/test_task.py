@@ -148,9 +148,40 @@ def test_task_report_json_serialization() -> None:
     assert decoded["id"] == task.id
     assert decoded["title"] == "Refactor parser"
     assert decoded["status"] == "running"
+    assert decoded["final"] is False
+    assert decoded["lifecycle_phase"] == "running"
     assert decoded["git_branch"] is None
     assert decoded["files_changed"] == []
     assert decoded["metadata"] == {"area": "parser"}
+
+
+@pytest.mark.parametrize(
+    ("transition", "phase", "final"),
+    [
+        (None, "created", False),
+        ("start", "running", False),
+        ("complete", "completed", True),
+        ("fail", "failed", True),
+        ("cancel", "cancelled", True),
+    ],
+)
+def test_task_report_lifecycle_is_derived_from_status(transition, phase, final) -> None:
+    task = Task(title="Lifecycle")
+    if transition == "start":
+        task.start()
+    elif transition == "complete":
+        task.complete()
+    elif transition == "fail":
+        task.fail("expected failure")
+    elif transition == "cancel":
+        task.cancel("expected cancellation")
+
+    report = task.report()
+
+    assert report.lifecycle_phase == phase
+    assert report.final is final
+    assert report.as_dict()["lifecycle_phase"] == phase
+    assert report.as_dict()["final"] is final
 
 
 def test_task_checkpoint_json_serialization() -> None:

@@ -37,6 +37,18 @@ class TaskReport:
     files_changed: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def final(self) -> bool:
+        return self.status in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }
+
+    @property
+    def lifecycle_phase(self) -> str:
+        return self.status
+
     @classmethod
     def from_task(
         cls,
@@ -74,6 +86,8 @@ class TaskReport:
             "title": self.title,
             "description": self.description,
             "status": self.status,
+            "final": self.final,
+            "lifecycle_phase": self.lifecycle_phase,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,

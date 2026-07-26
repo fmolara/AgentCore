@@ -491,6 +491,8 @@ def test_explicit_approval_executes_and_never_commits(tmp_path) -> None:
     assert [record["sequence"] for record in records] == list(range(1, len(records) + 1))
     report = next(record["payload"]["report"] for record in records if record["event_type"] == "task.report")
     assert report["metadata"]["local_approval"]["approved"] is True
+    assert report["final"] is True
+    assert report["lifecycle_phase"] == "completed"
 
 
 def test_interactive_rejection_returns_rejected_without_mutation(tmp_path) -> None:

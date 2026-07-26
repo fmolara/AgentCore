@@ -8,6 +8,7 @@ from typing import Any, Iterator
 import pytest
 
 from agentcore_server import (
+    ActionPlan,
     AgentLab,
     IterativeLLMPlanner,
     ListEventSink,
@@ -23,6 +24,8 @@ from agentcore_server.planning.explorer import (
     ExplorationBudgetError,
     WorkspaceExplorer,
 )
+from agentcore_server.planning.iterative import ITERATIVE_SYSTEM_PROMPT
+from agentcore_server.planning.llm import PLANNER_SYSTEM_PROMPT
 from agentcore_server.runtime.base import Runtime
 from agentcore_server.server.state import AgentCoreServerState
 from agentcore_server.sessions import Session, SessionStore
@@ -137,6 +140,20 @@ def _final_response(*actions: dict[str, Any]) -> str:
             },
         }
     )
+
+
+def test_task_report_is_not_advertised_to_planners_but_old_plans_remain_valid() -> None:
+    assert '- task_report: {"type":"task_report"}' not in PLANNER_SYSTEM_PROMPT
+    assert '- task_report: {"type":"task_report"}' not in ITERATIVE_SYSTEM_PROMPT
+
+    plan = ActionPlan.from_dict(
+        {
+            "title": "Legacy report plan",
+            "actions": [{"type": "task_report"}],
+        }
+    )
+
+    assert [action.action_type for action in plan.actions] == ["task_report"]
 
 
 def _consume(iterator):

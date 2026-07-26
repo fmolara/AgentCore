@@ -70,7 +70,6 @@ Allowed FINAL action types:
 - create_checkpoint: {"type":"create_checkpoint","label":"short label","description":"optional text"}
 - git_status: {"type":"git_status"}
 - git_diff: {"type":"git_diff"}
-- task_report: {"type":"task_report"}
 {run_check_schema}
 
 Forbidden in FINAL:
