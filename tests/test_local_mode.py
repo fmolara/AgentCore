@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import builtins
 import ast
+from io import StringIO
 import json
 from pathlib import Path
 import subprocess
@@ -306,7 +306,7 @@ def test_proposal_only_accepts_structurally_valid_poor_plan_without_mutation(tmp
     assert event_types.count("plan.proposed") == 1
 
 
-def test_noninteractive_execution_requires_explicit_approve(tmp_path) -> None:
+def test_seeded_interactive_execution_requires_explicit_approval(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     _init_repo(workspace)
     lab = _make_lab(
@@ -316,12 +316,143 @@ def test_noninteractive_execution_requires_explicit_approve(tmp_path) -> None:
 
     code = run_cli(
         ["--config", "unused", "--workspace", str(workspace), "--prompt", "Edit parser"],
+        stdin=StringIO(""),
         lab_factory=_factory(lab),
     )
 
     assert code == LocalExitCode.APPROVAL_REQUIRED
     assert "return 0" in (workspace / "parser.c").read_text(encoding="utf-8")
     assert lab.runtime.shutdown_calls == 1
+
+
+def test_prompt_file_preserves_multiline_content_then_accepts_approval(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    baseline = _init_repo(workspace)
+    prompt = "Fix the parser.\n\n  Preserve indentation.\nAccettare A-F.\n"
+    prompt_file = tmp_path / "task.txt"
+    prompt_file.write_text(prompt, encoding="utf-8")
+    lab = _make_lab(
+        workspace,
+        _plan({"type": "replace_text", "path": "parser.c", "old": "return 0", "new": "return 1"}),
+    )
+
+    code = run_cli(
+        [
+            "--config",
+            "unused",
+            "--workspace",
+            str(workspace),
+            "--prompt-file",
+            str(prompt_file),
+            "--no-color",
+        ],
+        stdin=StringIO("/approve\n"),
+        lab_factory=_factory(lab),
+    )
+
+    assert code == LocalExitCode.SUCCESS
+    assert lab.runtime.last_prompt is not None
+    assert lab.runtime.last_prompt.endswith(prompt)
+    assert "return 1" in (workspace / "parser.c").read_text(encoding="utf-8")
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip() == baseline
+
+
+def test_prompt_content_is_preserved_then_accepts_rejection(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _init_repo(workspace)
+    prompt = "Fix parser\nwithout changing tests"
+    lab = _make_lab(
+        workspace,
+        _plan({"type": "replace_text", "path": "parser.c", "old": "return 0", "new": "return 1"}),
+    )
+
+    code = run_cli(
+        ["--config", "unused", "--workspace", str(workspace), "--prompt", prompt, "--no-color"],
+        stdin=StringIO("/reject not approved\n"),
+        lab_factory=_factory(lab),
+    )
+
+    assert code == LocalExitCode.PROPOSAL_REJECTED
+    assert lab.runtime.last_prompt is not None
+    assert lab.runtime.last_prompt.endswith(prompt)
+    assert "return 0" in (workspace / "parser.c").read_text(encoding="utf-8")
+
+
+def test_prompt_file_eof_after_proposal_requires_approval_without_mutation(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    _init_repo(workspace)
+    prompt_file = tmp_path / "task.txt"
+    prompt_file.write_text("Edit parser\n", encoding="utf-8")
+    lab = _make_lab(
+        workspace,
+        _plan({"type": "replace_text", "path": "parser.c", "old": "return 0", "new": "return 1"}),
+    )
+
+    code = run_cli(
+        [
+            "--config",
+            "unused",
+            "--workspace",
+            str(workspace),
+            "--prompt-file",
+            str(prompt_file),
+            "--no-color",
+        ],
+        stdin=StringIO(""),
+        lab_factory=_factory(lab),
+    )
+
+    assert code == LocalExitCode.APPROVAL_REQUIRED
+    assert "return 0" in (workspace / "parser.c").read_text(encoding="utf-8")
+
+
+def test_eof_before_interactive_task_exits_without_creating_task(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    trace = tmp_path / "trace.jsonl"
+    lab = _make_lab(workspace, _plan({"type": "git_diff"}))
+
+    code = run_cli(
+        [
+            "--config",
+            "unused",
+            "--workspace",
+            str(workspace),
+            "--trace-file",
+            str(trace),
+            "--no-color",
+        ],
+        stdin=StringIO(""),
+        lab_factory=_factory(lab),
+    )
+
+    assert code == LocalExitCode.SUCCESS
+    assert trace.read_text(encoding="utf-8") == ""
+
+
+def test_prompt_and_prompt_file_are_mutually_exclusive(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    prompt_file = tmp_path / "task.txt"
+    prompt_file.write_text("Task\n", encoding="utf-8")
+    lab = _make_lab(workspace, _plan({"type": "git_diff"}))
+
+    code = run_cli(
+        [
+            "--config",
+            "unused",
+            "--workspace",
+            str(workspace),
+            "--prompt",
+            "Task",
+            "--prompt-file",
+            str(prompt_file),
+        ],
+        lab_factory=_factory(lab),
+    )
+
+    assert code == LocalExitCode.CLI_OR_CONFIG_ERROR
+    assert lab.runtime.load_calls == 0
 
 
 def test_explicit_approval_executes_and_never_commits(tmp_path) -> None:
@@ -362,18 +493,16 @@ def test_explicit_approval_executes_and_never_commits(tmp_path) -> None:
     assert report["metadata"]["local_approval"]["approved"] is True
 
 
-def test_interactive_rejection_returns_rejected_without_mutation(tmp_path, monkeypatch) -> None:
+def test_interactive_rejection_returns_rejected_without_mutation(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     _init_repo(workspace)
     lab = _make_lab(
         workspace,
         _plan({"type": "replace_text", "path": "parser.c", "old": "return 0", "new": "return 1"}),
     )
-    answers = iter(["Edit parser", "/reject insufficient plan"])
-    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
-
     code = run_cli(
         ["--config", "unused", "--workspace", str(workspace), "--no-color"],
+        stdin=StringIO("Edit parser\n/reject insufficient plan\n"),
         lab_factory=_factory(lab),
     )
 
@@ -382,18 +511,16 @@ def test_interactive_rejection_returns_rejected_without_mutation(tmp_path, monke
     assert lab.runtime.shutdown_calls == 1
 
 
-def test_interactive_abort_cancels_before_execution(tmp_path, monkeypatch) -> None:
+def test_interactive_abort_cancels_before_execution(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     _init_repo(workspace)
     lab = _make_lab(
         workspace,
         _plan({"type": "replace_text", "path": "parser.c", "old": "return 0", "new": "return 1"}),
     )
-    answers = iter(["Edit parser", "/abort stop now"])
-    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
-
     code = run_cli(
         ["--config", "unused", "--workspace", str(workspace), "--no-color"],
+        stdin=StringIO("Edit parser\n/abort stop now\n"),
         lab_factory=_factory(lab),
     )
 

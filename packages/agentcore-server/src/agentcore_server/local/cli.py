@@ -66,10 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
 def run_cli(
     argv: Sequence[str] | None = None,
     *,
+    stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     lab_factory=AgentLab.from_config,
 ) -> int:
+    stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     parser = build_parser()
@@ -115,9 +117,18 @@ def run_cli(
             _render_exception(renderer, exc, debug=args.debug)
             return int(LocalExitCode.RUNTIME_UNAVAILABLE)
 
-        if instruction is None:
-            return int(_run_interactive(app, renderer))
-        return int(_run_noninteractive(app, renderer, instruction, args))
+        if args.proposal_only or args.approve:
+            assert instruction is not None
+            return int(_run_noninteractive(app, renderer, instruction, args))
+        return int(
+            _run_interactive(
+                app,
+                renderer,
+                instruction=instruction,
+                stdin=stdin,
+                stdout=stdout,
+            )
+        )
     except InvalidProposalError as exc:
         _render_exception(renderer, exc, debug=args.debug)
         return int(LocalExitCode.INVALID_PROPOSAL)
@@ -189,15 +200,23 @@ def _run_noninteractive(
     return _execution_exit_code(execution.status)
 
 
-def _run_interactive(app: LocalAgentCoreApp, renderer: TerminalRenderer) -> LocalExitCode:
+def _run_interactive(
+    app: LocalAgentCoreApp,
+    renderer: TerminalRenderer,
+    *,
+    instruction: str | None,
+    stdin: TextIO,
+    stdout: TextIO,
+) -> LocalExitCode:
     renderer.info("AgentCore local mode. Git commits are never automatic. Type /help for commands.")
-    try:
-        instruction = input("Task> ").strip()
-    except EOFError:
-        return LocalExitCode.SUCCESS
-    if not instruction:
-        renderer.error("task instruction must not be empty")
-        return LocalExitCode.CLI_OR_CONFIG_ERROR
+    if instruction is None:
+        try:
+            instruction = _read_terminal_line("Task> ", stdin=stdin, stdout=stdout).strip()
+        except EOFError:
+            return LocalExitCode.SUCCESS
+        if not instruction:
+            renderer.error("task instruction must not be empty")
+            return LocalExitCode.CLI_OR_CONFIG_ERROR
 
     task = app.create_task(instruction)
     result = app.propose(task, instruction, stream=True)
@@ -213,9 +232,12 @@ def _run_interactive(app: LocalAgentCoreApp, renderer: TerminalRenderer) -> Loca
             renderer.show_diff(app.diff())
             return code
         try:
-            command = input("agentcore> ").strip()
+            command = _read_terminal_line("agentcore> ", stdin=stdin, stdout=stdout).strip()
         except EOFError:
-            command = "/quit"
+            if handle is not None:
+                handle.wait()
+                return _completed_handle_code(handle)
+            return LocalExitCode.APPROVAL_REQUIRED
         if not command:
             continue
         if not command.startswith("/"):
@@ -270,6 +292,15 @@ def _run_interactive(app: LocalAgentCoreApp, renderer: TerminalRenderer) -> Loca
             return _task_exit_code(task.status, proposal.status)
         else:
             renderer.error(f"unknown command: {name}")
+
+
+def _read_terminal_line(prompt: str, *, stdin: TextIO, stdout: TextIO) -> str:
+    stdout.write(prompt)
+    stdout.flush()
+    line = stdin.readline()
+    if line == "":
+        raise EOFError
+    return line.rstrip("\r\n")
 
 
 def _proposal_from_result(result) -> PlanProposal:
