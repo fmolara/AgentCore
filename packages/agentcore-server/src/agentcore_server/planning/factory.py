@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from agentcore_server.planning.exploration import ExplorationLimits
+from agentcore_server.planning.context import ContextPolicy
+from agentcore_server.planning.evidence import EvidenceBudget
 from agentcore_server.planning.iterative import IterativeLLMPlanner
 from agentcore_server.planning.llm import SimpleLLMPlanner
 
@@ -34,6 +36,21 @@ def build_planner(
     minimum_tokens = finalization.get("minimum_tokens", {})
     if not isinstance(budgets, dict) or not isinstance(minimum_tokens, dict):
         raise ValueError("planner finalization budgets and minimum_tokens must be mappings")
+    context_config = planner_config.get("context", {})
+    if not isinstance(context_config, dict):
+        raise ValueError("planner context configuration must be a mapping")
+    # Legacy finalization values remain accepted and override context defaults.
+    merged_context = dict(context_config)
+    if budgets:
+        merged_context["output_tokens"] = {
+            **budgets,
+            **merged_context.get("output_tokens", {}),
+        }
+    if minimum_tokens:
+        merged_context["minimum_output_tokens"] = {
+            **minimum_tokens,
+            **merged_context.get("minimum_output_tokens", {}),
+        }
     return IterativeLLMPlanner(
         max_tokens=max_tokens,
         temperature=temperature,
@@ -41,6 +58,11 @@ def build_planner(
         check_names=tuple(checks),
         phase_budgets=budgets,
         minimum_phase_tokens=minimum_tokens,
+        context_policy=ContextPolicy.from_config(
+            merged_context,
+            legacy_max_tokens=max_tokens,
+        ),
+        evidence_budget=EvidenceBudget.from_config(context_config.get("evidence")),
         max_action_payload_bytes=finalization.get("max_action_payload_bytes", 16384),
         forbid_existing_file_write=finalization.get("forbid_existing_file_write", False),
     )

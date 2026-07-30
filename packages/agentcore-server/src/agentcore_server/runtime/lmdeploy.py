@@ -12,13 +12,21 @@ from agentcore_server.generation.result import GenerationMetrics, GenerationResu
 from agentcore_server.generation.stream import StreamChunk
 from agentcore_server.logging.events import generation_event
 from agentcore_server.logging.writer import JsonlWriter
-from agentcore_server.runtime.base import Runtime
+from agentcore_server.runtime.base import Runtime, model_declared_context_limit
 from agentcore_server.runtime.health import normalized_health, query_gpu
 from agentcore_server.runtime.server_process import ServerProcess
 from agentcore_server.sessions.session import Session
 
 
 class LMDeployRuntime(Runtime):
+    def context_capabilities(self) -> dict[str, int | None]:
+        context = self.config.get("context", {})
+        active = context.get("max_context_tokens") if isinstance(context, dict) else None
+        return {
+            "runtime_context_limit": active if isinstance(active, int) else None,
+            "model_declared_context_limit": model_declared_context_limit(self.config),
+        }
+
     def __init__(
         self,
         config: dict[str, Any],

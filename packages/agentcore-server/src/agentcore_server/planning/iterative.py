@@ -24,6 +24,18 @@ from agentcore_server.planning.exploration import (
     PlanningDecision,
     PlanningPhase,
 )
+from agentcore_server.planning.context import (
+    ContextCapabilities,
+    ContextPolicy,
+    ContextPreflight,
+    PromptSection,
+    RenderedPrompt,
+)
+from agentcore_server.planning.evidence import (
+    EvidenceBudget,
+    EvidencePack,
+    build_evidence_pack,
+)
 from agentcore_server.planning.explorer import (
     ExplorationBudgetError,
     ExplorationError,
@@ -33,9 +45,6 @@ from agentcore_server.planning.finalization import (
     CandidateReview,
     FinalCandidate,
     PlanDiagnostic,
-    build_recovery_prompt,
-    build_review_prompt,
-    build_revision_prompt,
 )
 from agentcore_server.planning.json_output import parse_json_object
 from agentcore_server.planning.planner import PlannerResult
@@ -122,6 +131,8 @@ class IterativeLLMPlanner:
         check_names: tuple[str, ...] = (),
         phase_budgets: dict[str, int] | None = None,
         minimum_phase_tokens: dict[str, int] | None = None,
+        context_policy: ContextPolicy | None = None,
+        evidence_budget: EvidenceBudget | None = None,
         max_action_payload_bytes: int = 16384,
         forbid_existing_file_write: bool = False,
     ) -> None:
@@ -129,6 +140,10 @@ class IterativeLLMPlanner:
         self.temperature = temperature
         self.limits = limits or ExplorationLimits()
         self.check_names = tuple(sorted(check_names))
+        self.context_policy = context_policy or ContextPolicy.from_config(
+            None, legacy_max_tokens=max_tokens
+        )
+        self.evidence_budget = evidence_budget or EvidenceBudget()
         configured_budgets = dict(phase_budgets or {})
         self.phase_budgets = {
             "exploration": configured_budgets.get("exploration", max_tokens),
@@ -147,6 +162,9 @@ class IterativeLLMPlanner:
             "revision": configured_minimums.get("revision", 512),
             "final_review": configured_minimums.get("final_review", 192),
         }
+        if context_policy is not None:
+            self.phase_budgets.update(context_policy.phase_output_tokens)
+            self.minimum_phase_tokens.update(context_policy.minimum_output_tokens)
         if (
             not isinstance(max_action_payload_bytes, int)
             or isinstance(max_action_payload_bytes, bool)
@@ -227,11 +245,20 @@ class IterativeLLMPlanner:
                 "task_context_sha256": instruction_digest,
             },
         )
+        capabilities = ContextCapabilities.discover(agent.lab.config, agent.runtime)
+        yield self._event(
+            agent,
+            task,
+            "planning.context.discovered",
+            "Effective runtime context capacity discovered",
+            capabilities.as_dict(),
+        )
 
         last_raw = ""
         last_metrics: GenerationMetrics | None = None
         for round_number in range(1, self.limits.max_rounds + 2):
-            prompt = self.build_prompt(
+            phase = "exploration" if not rounds else "final_candidate"
+            prompt_candidates = self._prompt_candidates(
                 agent,
                 task,
                 instruction=instruction,
@@ -239,6 +266,7 @@ class IterativeLLMPlanner:
                 round_number=round_number,
                 actions_used=explorer.total_actions,
                 observation_bytes_used=explorer.total_observation_bytes,
+                phase=phase,
             )
             yield self._event(
                 agent,
@@ -256,25 +284,11 @@ class IterativeLLMPlanner:
                     "remaining_budget": self._remaining_budget(explorer, round_number),
                 },
             )
-            yield self._event(
-                agent,
-                task,
-                "planner.prompt",
-                f"Effective iterative planner prompt prepared for round {round_number}",
-                {
-                    "round": round_number,
-                    "prompt": prompt,
-                    "sanitized": True,
-                    "visible_model_input": True,
-                },
-            )
-
             try:
-                phase = "exploration" if not rounds else "final_candidate"
                 last_raw, last_metrics = yield from self._generate_structured(
                     agent,
                     task,
-                    prompt,
+                    prompt_candidates,
                     phase=phase,
                     round_number=round_number,
                     options=options,
@@ -614,7 +628,7 @@ class IterativeLLMPlanner:
         self,
         agent,
         task: Task,
-        prompt: str,
+        prompt: str | RenderedPrompt | list[RenderedPrompt],
         *,
         phase: str,
         round_number: int,
@@ -630,12 +644,123 @@ class IterativeLLMPlanner:
             requested = min(requested, caller_cap)
         selected_options = dict(options)
         selected_options["max_tokens"] = requested
-        round_options, prompt_tokens = self._round_generation_options(
+        candidates = (
+            prompt
+            if isinstance(prompt, list)
+            else [prompt if isinstance(prompt, RenderedPrompt) else RenderedPrompt(
+                (PromptSection("system_and_phase_instructions", prompt),)
+            )]
+        )
+        selected_prompt: RenderedPrompt | None = None
+        preflight: ContextPreflight | None = None
+        if len(candidates) > 1:
+            yield self._event(
+                agent,
+                task,
+                "planning.context.compaction.started",
+                f"Finite context compaction started for {phase}",
+                {"phase": phase, "levels": len(candidates)},
+            )
+        for level, candidate in enumerate(candidates):
+            current = self._context_preflight(
+                agent,
+                planning_session,
+                candidate,
+                phase=phase,
+                requested=requested,
+                compaction_level=level,
+            )
+            yield self._event(
+                agent,
+                task,
+                "planning.context.preflight",
+                f"Context preflight completed for {phase}",
+                current.as_dict(),
+            )
+            if current.sufficient:
+                selected_prompt, preflight = candidate, current
+                break
+        if selected_prompt is None or preflight is None:
+            last = current
+            yield self._event(
+                agent,
+                task,
+                "planning.context.insufficient",
+                f"Insufficient context for safe {phase} generation",
+                last.as_dict(),
+            )
+            raise ValueError(
+                "insufficient model context for safe structured response: "
+                f"prompt_tokens={last.total_prompt_tokens}, "
+                f"context_tokens={last.capabilities.effective_context_limit}, "
+                f"minimum_output_tokens={last.configured_minimum_output_tokens}"
+            )
+        if len(candidates) > 1:
+            yield self._event(
+                agent,
+                task,
+                "planning.context.compaction.completed",
+                f"Context compaction selected level {preflight.compaction_level}",
+                preflight.as_dict(),
+            )
+        evidence_section = next(
+            (section.text for section in selected_prompt.sections if section.name == "evidence"),
+            None,
+        )
+        if evidence_section and "\n" in evidence_section:
+            try:
+                evidence_payload = json.loads(evidence_section.split("\n", 1)[1])
+            except (ValueError, TypeError):
+                evidence_payload = None
+            if isinstance(evidence_payload, dict):
+                public_items = []
+                for item in evidence_payload.get("items", []):
+                    public_items.append(
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key != "spans"
+                        }
+                        | {
+                            "spans": [
+                                {
+                                    "start_line": span.get("start_line"),
+                                    "end_line": span.get("end_line"),
+                                }
+                                for span in item.get("spans", [])
+                            ]
+                        }
+                    )
+                yield self._event(
+                    agent,
+                    task,
+                    "planning.evidence.pack.created",
+                    f"Compact evidence pack prepared for {phase}",
+                    {
+                        "phase": phase,
+                        "compaction_level": preflight.compaction_level,
+                        "items": public_items,
+                        "omitted_observation_ids": evidence_payload.get(
+                            "omitted_observation_ids", []
+                        ),
+                    },
+                )
+        prompt_text = selected_prompt.text
+        round_options = dict(selected_options)
+        round_options["max_tokens"] = preflight.effective_output_tokens
+        yield self._event(
             agent,
-            planning_session,
-            prompt,
-            selected_options,
-            minimum_tokens=self.minimum_phase_tokens[phase],
+            task,
+            "planner.prompt",
+            f"Effective planner prompt prepared for {phase}",
+            {
+                "round": round_number,
+                "phase": phase,
+                "prompt": prompt_text,
+                "sanitized": True,
+                "visible_model_input": True,
+                "compaction_level": preflight.compaction_level,
+            },
         )
         yield self._event(
             agent,
@@ -645,11 +770,12 @@ class IterativeLLMPlanner:
             {
                 "round": round_number,
                 "budget_kind": phase,
-                "prompt_tokens": prompt_tokens,
+                "prompt_tokens": preflight.total_prompt_tokens,
                 "requested_max_tokens": requested,
-                "effective_max_tokens": round_options["max_tokens"],
+                "effective_max_tokens": preflight.effective_output_tokens,
                 "minimum_required_tokens": self.minimum_phase_tokens[phase],
-                "context_tokens": self._context_limit(agent),
+                "context_tokens": preflight.capabilities.effective_context_limit,
+                "context_limit_source": preflight.capabilities.context_limit_source,
             },
         )
         metrics: GenerationMetrics | None = None
@@ -659,7 +785,7 @@ class IterativeLLMPlanner:
             model_failed: str | None = None
             for event in agent._stream_with_session(
                 planning_session,
-                prompt,
+                prompt_text,
                 task=task,
                 **round_options,
             ):
@@ -681,7 +807,7 @@ class IterativeLLMPlanner:
         else:
             generated = agent._ask_with_session(
                 planning_session,
-                prompt,
+                prompt_text,
                 **round_options,
             )
             raw_text = generated.text.strip()
@@ -719,15 +845,17 @@ class IterativeLLMPlanner:
             "One bounded planning format recovery started",
             {"round": round_number},
         )
-        prompt = build_recovery_prompt(
+        prompt = self._recovery_prompt_candidates(
+            agent,
+            instruction=instruction,
+            rounds=rounds,
             expected_schema=(
                 '{"phase":"explore","summary":"...","actions":[...]} OR '
                 + FINAL_RESPONSE_SCHEMA
                 + ' OR {"phase":"cannot_plan","reason":"..."}'
             ),
-            task_context=self._task_context(task, instruction),
-            observations=self._observation_context(rounds),
-            malformed_output=_bounded_text(malformed_output),
+            malformed_output=malformed_output,
+            parse_error=None,
         )
         try:
             raw, metrics = yield from self._generate_structured(
@@ -801,13 +929,12 @@ class IterativeLLMPlanner:
                 "review": review.as_dict(),
             },
         )
-        revision_prompt = build_revision_prompt(
-            task_context=self._task_context(task, instruction),
-            observations=self._observation_context(rounds),
+        revision_prompt = self._revision_prompt_candidates(
+            agent,
+            instruction=instruction,
+            rounds=rounds,
             candidate=candidate,
             review=review,
-            final_schema=FINAL_RESPONSE_SCHEMA,
-            check_names=self.check_names,
         )
         try:
             raw, metrics = yield from self._generate_structured(
@@ -826,7 +953,7 @@ class IterativeLLMPlanner:
                 metrics=metrics,
                 expected_schema=FINAL_RESPONSE_SCHEMA,
                 task_context=self._task_context(task, instruction),
-                observations=self._observation_context(rounds),
+                rounds=rounds,
                 round_number=round_number,
                 options=options,
                 stream_model=stream_model,
@@ -900,11 +1027,11 @@ class IterativeLLMPlanner:
             "Independent candidate review started",
             {"round": round_number, "candidate_id": candidate.id, "review_phase": phase},
         )
-        prompt = build_review_prompt(
-            task_context=self._task_context(task, instruction),
-            observations=self._observation_context(rounds),
+        prompt = self._review_prompt_candidates(
+            agent,
+            instruction=instruction,
+            rounds=rounds,
             candidate=candidate,
-            check_names=self.check_names,
         )
         try:
             raw, metrics = yield from self._generate_structured(
@@ -966,7 +1093,7 @@ class IterativeLLMPlanner:
         metrics: GenerationMetrics | None,
         expected_schema: str,
         task_context: dict[str, Any],
-        observations: list[dict[str, Any]],
+        rounds: list[ExplorationRound],
         round_number: int,
         options: dict[str, Any],
         stream_model: bool,
@@ -976,6 +1103,7 @@ class IterativeLLMPlanner:
             decision = PlanningDecision.from_dict(parsed, limits=self.limits)
             return parsed, decision, raw, metrics
         except Exception as first_error:
+            parse_error = first_error
             yield self._event(
                 agent,
                 task,
@@ -994,11 +1122,13 @@ class IterativeLLMPlanner:
             "One bounded finalization format recovery started",
             {"round": round_number},
         )
-        prompt = build_recovery_prompt(
+        prompt = self._recovery_prompt_candidates(
+            agent,
+            instruction=str(task_context["instruction"]),
+            rounds=rounds,
             expected_schema=expected_schema,
-            task_context=task_context,
-            observations=observations,
-            malformed_output=_bounded_text(raw),
+            malformed_output=raw,
+            parse_error=parse_error,
         )
         recovered_raw, recovered_metrics = yield from self._generate_structured(
             agent,
@@ -1047,6 +1177,7 @@ class IterativeLLMPlanner:
             parsed = parse_json_object(raw)
             return parsed, CandidateReview.from_dict(parsed), raw, metrics
         except Exception as first_error:
+            parse_error = first_error
             yield self._event(
                 agent,
                 task,
@@ -1065,11 +1196,13 @@ class IterativeLLMPlanner:
             "One bounded review format recovery started",
             {"round": round_number},
         )
-        prompt = build_recovery_prompt(
+        prompt = self._recovery_prompt_candidates(
+            agent,
+            instruction=instruction,
+            rounds=rounds,
             expected_schema=REVIEW_RESPONSE_SCHEMA,
-            task_context=self._task_context(task, instruction),
-            observations=self._observation_context(rounds),
-            malformed_output=_bounded_text(raw),
+            malformed_output=raw,
+            parse_error=parse_error,
         )
         recovered_raw, recovered_metrics = yield from self._generate_structured(
             agent,
@@ -1130,6 +1263,94 @@ class IterativeLLMPlanner:
     def _observation_context(rounds: list[ExplorationRound]) -> list[dict[str, Any]]:
         return [round_.as_dict() for round_ in rounds]
 
+    def _prompt_candidates(
+        self,
+        agent,
+        task: Task,
+        *,
+        instruction: str,
+        rounds: tuple[ExplorationRound, ...],
+        round_number: int,
+        actions_used: int,
+        observation_bytes_used: int,
+        phase: str,
+    ) -> list[RenderedPrompt]:
+        remaining = {
+            "rounds": max(0, self.limits.max_rounds - round_number + 1),
+            "actions": max(0, self.limits.max_total_actions - actions_used),
+            "observation_bytes": max(
+                0,
+                self.limits.max_total_observation_bytes - observation_bytes_used,
+            ),
+        }
+        workspace = {
+            "identity": str(agent.workspace.root),
+            "top_level": _top_level_listing(agent),
+            "git_status": agent.git.status().stdout if agent.git.is_repo() else "",
+        }
+        tokenize = lambda text: agent.runtime.tokenize(str(text))
+        documents: list[RenderedPrompt] = []
+        for level in range(4):
+            pack = build_evidence_pack(
+                rounds,
+                instruction=instruction,
+                budget=self.evidence_budget,
+                tokenize=tokenize,
+                compaction_level=level,
+            )
+            if phase == "exploration":
+                instructions = (
+                    "Return one JSON object only; no Markdown or hidden reasoning. "
+                    "Choose explore, final, or cannot_plan. Exploration is read-only "
+                    "and bounded. No writes, commands, network, Git mutation, absolute "
+                    "paths, or workspace escape."
+                )
+                schema = (
+                    'EXPLORE {"phase":"explore","summary":"...",'
+                    '"actions":[{"type":"list_directory","path":".","max_depth":1,'
+                    '"include_hidden":false}|{"type":"search_files","root":".",'
+                    '"name_pattern":"*.c","content_query":"text","max_results":20}|'
+                    '{"type":"read_file","path":"file","start_line":1,"max_lines":200,'
+                    '"max_bytes":65536}]} FINAL '
+                    + FINAL_RESPONSE_SCHEMA
+                    + ' CANNOT {"phase":"cannot_plan","reason":"..."}'
+                )
+            else:
+                instructions = (
+                    "Return one complete JSON object only; no Markdown or hidden "
+                    "reasoning. Produce a complete executable FINAL plan, or "
+                    "cannot_plan. Prefer exact compact replace_text edits for existing "
+                    "files; use write_file for new files. Do not repeat completed "
+                    "discovery reads. No shell, network, arbitrary Git, workspace "
+                    "escape, or automatic commit."
+                )
+                schema = self._final_action_schema()
+            documents.append(
+                RenderedPrompt(
+                    (
+                        PromptSection("system_and_phase_instructions", instructions),
+                        PromptSection("original_task", "ORIGINAL TASK (verbatim):\n" + instruction),
+                        PromptSection(
+                            "workspace_metadata",
+                            "WORKSPACE:\n"
+                            + json.dumps(workspace, sort_keys=True, separators=(",", ":")),
+                        ),
+                        PromptSection("action_or_review_schema", "SCHEMA:\n" + schema),
+                        PromptSection(
+                            "evidence",
+                            "EVIDENCE:\n"
+                            + json.dumps(pack.as_dict(), sort_keys=True, separators=(",", ":")),
+                        ),
+                        PromptSection(
+                            "remaining_budget",
+                            "REMAINING BUDGET:\n"
+                            + json.dumps(remaining, sort_keys=True, separators=(",", ":")),
+                        ),
+                    )
+                )
+            )
+        return documents
+
     def build_prompt(
         self,
         agent,
@@ -1141,69 +1362,180 @@ class IterativeLLMPlanner:
         actions_used: int,
         observation_bytes_used: int,
     ) -> str:
-        check_names = ", ".join(self.check_names) or "(none configured)"
-        run_check_schema = (
-            "- run_check: "
-            '{"type":"run_check","check":"configured-name"} '
-            f"(configured names: {check_names})"
+        phase = "exploration" if not rounds else "final_candidate"
+        return self._prompt_candidates(
+            agent,
+            task,
+            instruction=instruction,
+            rounds=rounds,
+            round_number=round_number,
+            actions_used=actions_used,
+            observation_bytes_used=observation_bytes_used,
+            phase=phase,
+        )[0].text
+
+    def _final_action_schema(self) -> str:
+        checks = ",".join(self.check_names) or "(none)"
+        return (
+            FINAL_RESPONSE_SCHEMA
+            + ' Actions: read_file{"type":"read_file","path":"file"}; '
+            'replace_text{"type":"replace_text","path":"file","old":"exact",'
+            '"new":"replacement","count":1}; write_file{"type":"write_file",'
+            '"path":"new-file","content":"complete"}; '
+            'create_checkpoint{"type":"create_checkpoint","label":"..."}; '
+            'git_status{"type":"git_status"}; git_diff{"type":"git_diff"}; '
+            f'run_check{{"type":"run_check","check":"name"}} names=[{checks}].'
         )
-        remaining = {
-            "rounds": max(0, self.limits.max_rounds - round_number + 1),
-            "actions": max(0, self.limits.max_total_actions - actions_used),
-            "observation_bytes": max(
-                0,
-                self.limits.max_total_observation_bytes - observation_bytes_used,
-            ),
-        }
-        workspace = {
-            "root": str(agent.workspace.root),
-            "top_level": _top_level_listing(agent),
-            "git_status": agent.git.status().stdout if agent.git.is_repo() else "",
-        }
-        system = ITERATIVE_SYSTEM_PROMPT.replace(
-            "{run_check_schema}",
-            run_check_schema,
-        )
-        context = {
-            "task": {
-                "id": task.id,
-                "title": task.title,
-                "instruction": instruction,
-            },
-            "workspace": workspace,
-            "previous_observations": [
-                {
-                    "round": round_.number,
-                    "observations": [
-                        {
-                            "action_type": observation.action_type,
-                            "status": observation.status,
-                            "data": observation.data,
-                            "error": observation.error,
-                            "truncated": observation.truncated,
-                        }
-                        for observation in round_.observations
-                    ],
-                }
-                for round_ in rounds
-            ],
-            "remaining_budget": remaining,
-            "terminal_decision_required": round_number > self.limits.max_rounds,
-        }
-        label = "Immutable task context for this stateless planning round:"
-        prompt = (
-            system
-            + "\n\n"
-            + label
-            + "\n"
-            + json.dumps(context, sort_keys=True, separators=(",", ":"))
-        )
-        if round_number > self.limits.max_rounds:
-            prompt += (
-                "\n\nNo exploration rounds remain. The phase MUST be \"final\" "
-                "or \"cannot_plan\". Do not return \"explore\"."
+
+    def _evidence_packs(
+        self,
+        agent,
+        rounds: list[ExplorationRound] | tuple[ExplorationRound, ...],
+        instruction: str,
+    ) -> list[EvidencePack]:
+        tokenize = lambda text: agent.runtime.tokenize(str(text))
+        return [
+            build_evidence_pack(
+                rounds,
+                instruction=instruction,
+                budget=self.evidence_budget,
+                tokenize=tokenize,
+                compaction_level=level,
             )
-        return prompt
+            for level in range(4)
+        ]
+
+    def _review_prompt_candidates(
+        self,
+        agent,
+        *,
+        instruction: str,
+        rounds: list[ExplorationRound],
+        candidate: FinalCandidate,
+    ) -> list[RenderedPrompt]:
+        instructions = (
+            "Independently review the complete candidate against the task and "
+            "evidence. Check exact edits, portability, undefined behavior, "
+            "preservation, malformed-input coverage, configured checks, unrelated "
+            "changes, arbitrary commands, and commits. Accept means no material "
+            "defect was identified; it is not proof. Return JSON only."
+        )
+        return [
+            RenderedPrompt(
+                (
+                    PromptSection("system_and_phase_instructions", instructions),
+                    PromptSection("original_task", "ORIGINAL TASK (verbatim):\n" + instruction),
+                    PromptSection("action_or_review_schema", "REVIEW SCHEMA:\n" + REVIEW_RESPONSE_SCHEMA),
+                    PromptSection(
+                        "evidence",
+                        "EVIDENCE:\n"
+                        + json.dumps(pack.as_dict(), sort_keys=True, separators=(",", ":")),
+                    ),
+                    PromptSection(
+                        "candidate",
+                        "COMPLETE CANDIDATE:\n"
+                        + json.dumps(candidate.as_dict(), sort_keys=True, separators=(",", ":")),
+                    ),
+                    PromptSection(
+                        "validation_diagnostics",
+                        "CONFIGURED CHECKS:\n"
+                        + json.dumps(list(self.check_names), separators=(",", ":")),
+                    ),
+                )
+            )
+            for pack in self._evidence_packs(agent, rounds, instruction)
+        ]
+
+    def _revision_prompt_candidates(
+        self,
+        agent,
+        *,
+        instruction: str,
+        rounds: list[ExplorationRound],
+        candidate: FinalCandidate,
+        review: CandidateReview,
+    ) -> list[RenderedPrompt]:
+        return [
+            RenderedPrompt(
+                (
+                    PromptSection(
+                        "system_and_phase_instructions",
+                        "Return one complete revised FINAL JSON object only. Apply "
+                        "every required finding. Prefer compact replace_text edits. "
+                        "No prose, JSON patch, hidden reasoning, shell, or commit.",
+                    ),
+                    PromptSection("original_task", "ORIGINAL TASK (verbatim):\n" + instruction),
+                    PromptSection(
+                        "action_or_review_schema",
+                        "FINAL SCHEMA:\n" + self._final_action_schema(),
+                    ),
+                    PromptSection(
+                        "evidence",
+                        "EVIDENCE:\n"
+                        + json.dumps(pack.as_dict(), sort_keys=True, separators=(",", ":")),
+                    ),
+                    PromptSection(
+                        "candidate",
+                        "REJECTED CANDIDATE:\n"
+                        + json.dumps(candidate.as_dict(), sort_keys=True, separators=(",", ":")),
+                    ),
+                    PromptSection(
+                        "review_findings",
+                        "REVIEW FINDINGS:\n"
+                        + json.dumps(review.as_dict(), sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+            )
+            for pack in self._evidence_packs(agent, rounds, instruction)
+        ]
+
+    def _recovery_prompt_candidates(
+        self,
+        agent,
+        *,
+        instruction: str,
+        rounds: list[ExplorationRound],
+        expected_schema: str,
+        malformed_output: str,
+        parse_error: Exception | None,
+    ) -> list[RenderedPrompt]:
+        prefix_chars = self.context_policy.malformed_prefix_chars
+        suffix_chars = self.context_policy.malformed_suffix_chars
+        diagnostic = {
+            "error_type": type(parse_error).__name__ if parse_error else "structured_parse_error",
+            "error": str(parse_error) if parse_error else "invalid structured output",
+            "sha256": hashlib.sha256(malformed_output.encode("utf-8")).hexdigest(),
+            "prefix": malformed_output[:prefix_chars],
+            "suffix": malformed_output[-suffix_chars:] if suffix_chars else "",
+            "original_chars": len(malformed_output),
+            "excerpt_chars": min(len(malformed_output), prefix_chars)
+            + min(max(0, len(malformed_output) - prefix_chars), suffix_chars),
+        }
+        return [
+            RenderedPrompt(
+                (
+                    PromptSection(
+                        "system_and_phase_instructions",
+                        "Return one complete replacement JSON object only. Do not "
+                        "continue, repair, or infer actions from partial output. No "
+                        "Markdown, prose, or hidden reasoning.",
+                    ),
+                    PromptSection("original_task", "ORIGINAL TASK (verbatim):\n" + instruction),
+                    PromptSection("action_or_review_schema", "REQUIRED SCHEMA:\n" + expected_schema),
+                    PromptSection(
+                        "evidence",
+                        "EVIDENCE:\n"
+                        + json.dumps(pack.as_dict(), sort_keys=True, separators=(",", ":")),
+                    ),
+                    PromptSection(
+                        "malformed_response_diagnostic",
+                        "MALFORMED RESPONSE DIAGNOSTIC:\n"
+                        + json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+                    ),
+                )
+            )
+            for pack in self._evidence_packs(agent, rounds, instruction)
+        ]
 
     def _validate_final_plan(
         self,
@@ -1344,48 +1676,37 @@ class IterativeLLMPlanner:
             ),
         }
 
-    def _round_generation_options(
+    def _context_preflight(
         self,
         agent,
         planning_session,
-        prompt: str,
-        options: dict[str, Any],
+        prompt: RenderedPrompt,
         *,
-        minimum_tokens: int,
-    ) -> tuple[dict[str, Any], int | None]:
-        selected = dict(options)
-        requested = selected.get("max_tokens", self.max_tokens)
-        if not isinstance(requested, int) or isinstance(requested, bool) or requested <= 0:
-            raise ValueError("planner max_tokens must be a positive integer")
-        if requested < minimum_tokens:
-            raise ValueError(
-                f"configured output budget {requested} is below safe minimum {minimum_tokens}"
-            )
-        context_limit = self._context_limit(agent)
-        if context_limit is None:
-            return selected, None
+        phase: str,
+        requested: int,
+        compaction_level: int,
+    ) -> ContextPreflight:
+        capabilities = ContextCapabilities.discover(agent.lab.config, agent.runtime)
         messages = planning_session.transcript()
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": prompt.text})
         prompt_tokens = agent.runtime.tokenize(messages)
-        available = context_limit - prompt_tokens - 32
-        if available < minimum_tokens:
-            raise ValueError(
-                "insufficient model context for safe structured response: "
-                f"prompt_tokens={prompt_tokens}, context_tokens={context_limit}, "
-                f"minimum_output_tokens={minimum_tokens}"
-            )
-        selected["max_tokens"] = min(requested, available)
-        return selected, prompt_tokens
-
-    @staticmethod
-    def _context_limit(agent) -> int | None:
-        context = agent.lab.config.get("context", {})
-        if not isinstance(context, dict):
-            return None
-        value = context.get("max_context_tokens")
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            return None
-        return value
+        available = max(
+            0,
+            capabilities.effective_context_limit
+            - prompt_tokens
+            - self.context_policy.safety_margin_tokens,
+        )
+        return ContextPreflight(
+            phase=phase,
+            compaction_level=compaction_level,
+            capabilities=capabilities,
+            section_tokens=prompt.section_tokens(agent.runtime.tokenize),
+            total_prompt_tokens=prompt_tokens,
+            safety_margin_tokens=self.context_policy.safety_margin_tokens,
+            requested_output_tokens=requested,
+            configured_minimum_output_tokens=self.minimum_phase_tokens[phase],
+            effective_output_tokens=min(requested, available),
+        )
 
     def _planning_failed(
         self,

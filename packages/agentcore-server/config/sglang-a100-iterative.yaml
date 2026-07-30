@@ -22,21 +22,31 @@ planner:
   mode: iterative
   max_tokens: 1024
   temperature: 0
-  finalization:
-    budgets:
+  context:
+    safety_margin_tokens: 128
+    output_tokens:
       exploration: 1024
-      final_candidate: 2048
-      format_recovery: 2048
+      final_candidate: 1600
+      format_recovery: 1600
       review: 768
-      revision: 2048
+      revision: 1600
       final_review: 768
-    minimum_tokens:
-      exploration: 128
-      final_candidate: 512
-      format_recovery: 512
-      review: 192
-      revision: 512
-      final_review: 192
+    minimum_output_tokens:
+      exploration: 384
+      final_candidate: 1500
+      format_recovery: 1500
+      review: 384
+      revision: 1500
+      final_review: 384
+    evidence:
+      max_total_tokens: 1100
+      max_tokens_per_file: 320
+      max_files: 8
+      context_lines: 2
+    malformed_output:
+      prefix_chars: 240
+      suffix_chars: 240
+  finalization:
     max_action_payload_bytes: 16384
     forbid_existing_file_write: false
   exploration:
