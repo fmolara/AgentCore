@@ -12,6 +12,7 @@ from agentcore_server import (
     AgentLab,
     IterativeLLMPlanner,
     ListEventSink,
+    ReplaceTextAction,
     TaskExecutor,
 )
 from agentcore_server.generation.result import GenerationMetrics, GenerationResult
@@ -44,8 +45,9 @@ def _metrics() -> GenerationMetrics:
 
 
 class ScriptedRuntime(Runtime):
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str], *, auto_accept_reviews: bool = True) -> None:
         self.responses = list(responses)
+        self.auto_accept_reviews = auto_accept_reviews
         self.prompts: list[str] = []
         self.generation_options: list[dict[str, Any]] = []
         self.loaded = True
@@ -99,13 +101,29 @@ class ScriptedRuntime(Runtime):
 
     def _next(self, prompt: str) -> str:
         self.prompts.append(prompt)
+        if self.auto_accept_reviews and prompt.startswith(
+            "You are an independent AgentCore candidate-plan reviewer."
+        ):
+            return json.dumps(
+                {
+                    "verdict": "accept",
+                    "summary": "No material defect identified in scripted test candidate.",
+                    "findings": [],
+                }
+            )
         if not self.responses:
             raise AssertionError("scripted runtime has no response")
         return self.responses.pop(0)
 
 
-def _lab(workspace: Path, responses: list[str], *, config: dict[str, Any] | None = None) -> AgentLab:
-    runtime = ScriptedRuntime(responses)
+def _lab(
+    workspace: Path,
+    responses: list[str],
+    *,
+    config: dict[str, Any] | None = None,
+    auto_accept_reviews: bool = True,
+) -> AgentLab:
+    runtime = ScriptedRuntime(responses, auto_accept_reviews=auto_accept_reviews)
     lab = AgentLab.__new__(AgentLab)
     lab.config = config or {
         "runtime": "fake",
@@ -138,6 +156,27 @@ def _final_response(*actions: dict[str, Any]) -> str:
                 "actions": list(actions),
                 "metadata": {"planner": "iterative_llm"},
             },
+        }
+    )
+
+
+def _review_accept(summary: str = "No material defect identified.") -> str:
+    return json.dumps({"verdict": "accept", "summary": summary, "findings": []})
+
+
+def _review_revise(problem: str = "Candidate is unsafe.") -> str:
+    return json.dumps(
+        {
+            "verdict": "revise",
+            "summary": "Material correction required.",
+            "findings": [
+                {
+                    "severity": "major",
+                    "requirement": "portable arithmetic",
+                    "problem": problem,
+                    "required_change": "Use defined unsigned arithmetic for LONG_MIN magnitude.",
+                }
+            ],
         }
     )
 
@@ -283,9 +322,10 @@ def test_iterative_planner_explores_then_returns_complete_proposal(tmp_path) -> 
 
     runtime = lab.runtime
     assert isinstance(runtime, ScriptedRuntime)
-    assert len(runtime.prompts) == 2
+    assert len(runtime.prompts) == 3
     assert all(prompt.count(instruction) == 1 for prompt in runtime.prompts)
-    assert all("Allowed exploration actions:" in prompt for prompt in runtime.prompts)
+    assert all("Allowed exploration actions:" in prompt for prompt in runtime.prompts[:2])
+    assert "independent AgentCore candidate-plan reviewer" in runtime.prompts[2]
     assert str(workspace) in runtime.prompts[0]
     assert str(workspace) in runtime.prompts[1]
     assert "src/parser.c" in runtime.prompts[1]
@@ -561,7 +601,7 @@ def test_multiple_exploration_rounds_feed_only_new_observations(tmp_path) -> Non
     assert result.ok
     runtime = lab.runtime
     assert isinstance(runtime, ScriptedRuntime)
-    assert len(runtime.prompts) == 3
+    assert len(runtime.prompts) == 4
     assert "src/parser.c" in runtime.prompts[1]
     assert "parser token" in runtime.prompts[2]
     assert all(prompt.count(instruction) == 1 for prompt in runtime.prompts)
@@ -756,7 +796,7 @@ def test_composition_roots_use_same_iterative_class_and_values(tmp_path) -> None
     result = server.create_proposal(
         task_record.id,
         instruction="Inspect workspace",
-        max_tokens=128,
+        max_tokens=768,
         temperature=0,
     )
 
@@ -836,7 +876,7 @@ def test_generation_budget_is_capped_to_remaining_context(tmp_path, monkeypatch)
         config={
             "runtime": "fake",
             "workspace": {"root": str(workspace)},
-            "context": {"max_context_tokens": 1000},
+            "context": {"max_context_tokens": 1200},
             "planner": {"mode": "iterative", "max_tokens": 500},
         },
     )
@@ -848,12 +888,12 @@ def test_generation_budget_is_capped_to_remaining_context(tmp_path, monkeypatch)
     result = build_planner(lab.config).propose(agent, task, instruction="Inspect")
 
     assert result.ok
-    assert lab.runtime.generation_options[0]["max_tokens"] == 68
+    assert lab.runtime.generation_options[0]["max_tokens"] == 268
     budget = next(
         event for event in sink.events if event.event_type == "planning.generation_budget"
     )
     assert budget.payload["requested_max_tokens"] == 500
-    assert budget.payload["effective_max_tokens"] == 68
+    assert budget.payload["effective_max_tokens"] == 268
 
 
 def test_generation_fails_before_model_when_context_is_exhausted(
@@ -881,3 +921,413 @@ def test_generation_fails_before_model_when_context_is_exhausted(
     assert result.status == "failed"
     assert "insufficient model context" in (result.error or "")
     assert lab.runtime.prompts == []
+
+
+def test_compact_candidate_is_reviewed_before_proposal(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("return 0;\n", encoding="utf-8")
+    lab = _lab(
+        workspace,
+        [
+            _final_response(
+                {
+                    "type": "replace_text",
+                    "path": "parser.c",
+                    "old": "return 0;",
+                    "new": "return 1;",
+                },
+                {"type": "git_diff"},
+            ),
+            _review_accept(),
+        ],
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Edit parser", description="Edit parser")
+
+    result = build_planner(lab.config).propose(agent, task, instruction="Edit parser")
+
+    assert result.ok and result.proposal is not None
+    event_types = [event.event_type for event in sink.events]
+    assert event_types.index("planning.review.completed") < event_types.index(
+        "planning.final_candidate.accepted"
+    )
+    assert event_types.count("planning.final_candidate.accepted") == 1
+    assert task.status == TaskStatus.CREATED
+    assert (workspace / "parser.c").read_text(encoding="utf-8") == "return 0;\n"
+
+
+def test_candidate_diagnostics_cover_existing_write_redundant_read_and_checks(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("return 0;\n", encoding="utf-8")
+    instruction = "Run the configured build check and configured test check."
+    lab = _lab(
+        workspace,
+        [
+            _explore_response({"type": "read_file", "path": "parser.c"}),
+            _final_response(
+                {"type": "read_file", "path": "parser.c"},
+                {"type": "write_file", "path": "parser.c", "content": "return 1;\n"},
+            ),
+            _review_accept(),
+        ],
+        config={
+            "runtime": "fake",
+            "workspace": {
+                "root": str(workspace),
+                "checks": {"build": {"argv": ["make"]}, "test": {"argv": ["make", "test"]}},
+            },
+            "planner": {
+                "mode": "iterative",
+                "finalization": {"max_action_payload_bytes": 4},
+            },
+        },
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Edit", description=instruction)
+
+    result = build_planner(lab.config).propose(agent, task, instruction=instruction)
+
+    assert result.ok
+    generated = next(
+        event for event in sink.events if event.event_type == "planning.final_candidate.generated"
+    )
+    codes = {item["code"] for item in generated.payload["candidate"]["diagnostics"]}
+    assert codes == {
+        "existing_file_write",
+        "large_action_payload",
+        "missing_explicit_check",
+        "redundant_exploration_read",
+    }
+
+
+def test_malformed_candidate_gets_exactly_one_recovery_and_executes_nothing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("return 0;\n", encoding="utf-8")
+    lab = _lab(
+        workspace,
+        [
+            '{"phase":"final","plan":{"title":"truncated',
+            _final_response({"type": "git_diff"}),
+            _review_accept(),
+        ],
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Inspect", description="Inspect")
+    monkeypatch.setattr(
+        TaskExecutor,
+        "execute",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("executor invoked")),
+    )
+
+    result = build_planner(lab.config).propose(agent, task, instruction="Inspect")
+
+    assert result.ok
+    event_types = [event.event_type for event in sink.events]
+    assert event_types.count("planning.format_recovery.started") == 1
+    assert event_types.count("planning.format_recovery.completed") == 1
+    assert task.status == TaskStatus.CREATED
+    assert (workspace / "parser.c").read_text(encoding="utf-8") == "return 0;\n"
+
+
+def test_second_malformed_candidate_fails_without_proposal(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    lab = _lab(
+        workspace,
+        ["{bad", "{still bad"],
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Inspect", description="Inspect")
+
+    result = build_planner(lab.config).propose(agent, task, instruction="Inspect")
+
+    assert result.status == "failed"
+    event_types = [event.event_type for event in sink.events]
+    assert event_types.count("planning.format_recovery.started") == 1
+    assert event_types.count("planning.failed") == 1
+    assert "plan.proposed" not in event_types
+
+
+def test_malformed_review_has_one_recovery_and_never_implies_acceptance(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    lab = _lab(
+        workspace,
+        [
+            _final_response({"type": "git_diff"}),
+            '{"verdict":"accept"',
+            _review_accept("Recovered review accepted the candidate."),
+        ],
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Inspect", description="Inspect")
+
+    result = build_planner(lab.config).propose(agent, task, instruction="Inspect")
+
+    assert result.ok and result.proposal is not None
+    event_types = [event.event_type for event in sink.events]
+    assert event_types.count("planning.format_recovery.started") == 1
+    assert event_types.count("planning.final_candidate.accepted") == 1
+
+
+def test_review_revises_once_and_fresh_review_accepts(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("limit\n", encoding="utf-8")
+    unsafe = _final_response(
+        {
+            "type": "replace_text",
+            "path": "parser.c",
+            "old": "limit",
+            "new": "(unsigned long)(-LONG_MIN)",
+        }
+    )
+    safe = _final_response(
+        {
+            "type": "replace_text",
+            "path": "parser.c",
+            "old": "limit",
+            "new": "0UL - (unsigned long)LONG_MIN",
+        },
+        {"type": "git_diff"},
+    )
+    lab = _lab(
+        workspace,
+        [unsafe, _review_revise(), safe, _review_accept("Revised arithmetic is defined.")],
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Portable parser", description="Avoid -LONG_MIN")
+
+    result = build_planner(lab.config).propose(
+        agent,
+        task,
+        instruction="Avoid -LONG_MIN",
+    )
+
+    assert result.ok and result.proposal is not None
+    replacement = result.proposal.action_plan.actions[0]
+    assert isinstance(replacement, ReplaceTextAction)
+    assert replacement.new == "0UL - (unsigned long)LONG_MIN"
+    event_types = [event.event_type for event in sink.events]
+    assert event_types.count("planning.revision.started") == 1
+    assert event_types.count("planning.revision.completed") == 1
+    assert event_types.count("planning.review.started") == 2
+    assert event_types.count("planning.review.completed") == 2
+    assert event_types.count("planning.final_candidate.accepted") == 1
+    candidate_ids = [
+        event.payload["candidate"]["id"]
+        for event in sink.events
+        if event.event_type in {
+            "planning.final_candidate.generated",
+            "planning.revision.completed",
+        }
+    ]
+    assert len(candidate_ids) == 2
+    assert candidate_ids[0] != candidate_ids[1]
+
+
+def test_malformed_revision_gets_one_recovery_before_final_review(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("old\n", encoding="utf-8")
+    candidate = _final_response(
+        {"type": "replace_text", "path": "parser.c", "old": "old", "new": "unsafe"}
+    )
+    revised = _final_response(
+        {"type": "replace_text", "path": "parser.c", "old": "old", "new": "safe"}
+    )
+    lab = _lab(
+        workspace,
+        [candidate, _review_revise(), '{"phase":"final"', revised, _review_accept()],
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Edit", description="Edit safely")
+
+    result = build_planner(lab.config).propose(agent, task, instruction="Edit safely")
+
+    assert result.ok and result.proposal is not None
+    replacement = result.proposal.action_plan.actions[0]
+    assert isinstance(replacement, ReplaceTextAction)
+    assert replacement.new == "safe"
+    event_types = [event.event_type for event in sink.events]
+    assert event_types.count("planning.format_recovery.started") == 1
+    assert event_types.count("planning.revision.started") == 1
+    assert event_types.count("planning.review.started") == 2
+
+
+@pytest.mark.parametrize(
+    "second_review",
+    [
+        _review_revise("Still unsafe."),
+        json.dumps({"verdict": "cannot_verify", "reason": "Insufficient evidence."}),
+    ],
+)
+def test_revised_candidate_must_pass_final_review(tmp_path, second_review) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("old\n", encoding="utf-8")
+    candidate = _final_response(
+        {"type": "replace_text", "path": "parser.c", "old": "old", "new": "new"}
+    )
+    lab = _lab(
+        workspace,
+        [candidate, _review_revise(), candidate, second_review],
+        auto_accept_reviews=False,
+    )
+    agent = lab.create_agent(workspace_root=workspace)
+    task = agent.create_task(title="Edit", description="Edit")
+
+    result = build_planner(lab.config).propose(agent, task, instruction="Edit")
+
+    assert result.status == "failed"
+    assert result.proposal is None
+    assert task.status == TaskStatus.CREATED
+    assert (workspace / "parser.c").read_text(encoding="utf-8") == "old\n"
+
+
+def test_phase_specific_generation_budgets_are_distinct(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "parser.c").write_text("x\n", encoding="utf-8")
+    config = {
+        "runtime": "fake",
+        "workspace": {"root": str(workspace)},
+        "planner": {
+            "mode": "iterative",
+            "finalization": {
+                "budgets": {
+                    "exploration": 300,
+                    "final_candidate": 700,
+                    "review": 220,
+                }
+            },
+        },
+    }
+    lab = _lab(
+        workspace,
+        [
+            _explore_response({"type": "read_file", "path": "parser.c"}),
+            _final_response({"type": "git_diff"}),
+            _review_accept(),
+        ],
+        config=config,
+        auto_accept_reviews=False,
+    )
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Inspect", description="Inspect")
+
+    result = build_planner(config).propose(agent, task, instruction="Inspect")
+
+    assert result.ok
+    budgets = {
+        event.payload["budget_kind"]: event.payload["effective_max_tokens"]
+        for event in sink.events
+        if event.event_type == "planning.generation_budget"
+    }
+    assert budgets == {"exploration": 300, "final_candidate": 700, "review": 220}
+
+
+def test_signed_parser_scripted_regression_rejects_unsafe_then_accepts_compact_revision(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "src").mkdir()
+    (workspace / "tests").mkdir()
+    (workspace / "include").mkdir()
+    (workspace / "src" / "parser.c").write_text("unsigned long limit = LONG_MAX;\n", encoding="utf-8")
+    (workspace / "tests" / "test_parser.c").write_text("test_unsigned();\n", encoding="utf-8")
+    (workspace / "include" / "parser.h").write_text("int parse(const char *, long *);\n", encoding="utf-8")
+    instruction = (
+        "Run the configured build check and configured test check. "
+        "Support LONG_MIN without undefined behavior."
+    )
+    unsafe = _final_response(
+        {
+            "type": "replace_text",
+            "path": "src/parser.c",
+            "old": "LONG_MAX",
+            "new": "(unsigned long)(-LONG_MIN)",
+        },
+        {"type": "run_check", "check": "build"},
+        {"type": "run_check", "check": "test"},
+        {"type": "git_diff"},
+    )
+    revised = _final_response(
+        {
+            "type": "replace_text",
+            "path": "src/parser.c",
+            "old": "unsigned long limit = LONG_MAX;",
+            "new": "unsigned long limit = 0UL - (unsigned long)LONG_MIN;",
+        },
+        {
+            "type": "replace_text",
+            "path": "tests/test_parser.c",
+            "old": "test_unsigned();",
+            "new": "test_unsigned();\ntest_signed_boundaries();",
+        },
+        {"type": "run_check", "check": "build"},
+        {"type": "run_check", "check": "test"},
+        {"type": "git_diff"},
+    )
+    lab = _lab(
+        workspace,
+        [
+            _explore_response(
+                {"type": "read_file", "path": "src/parser.c"},
+                {"type": "read_file", "path": "include/parser.h"},
+                {"type": "read_file", "path": "tests/test_parser.c"},
+            ),
+            unsafe,
+            _review_revise("The candidate evaluates -LONG_MIN."),
+            revised,
+            _review_accept("Defined unsigned arithmetic and requested checks are present."),
+        ],
+        config={
+            "runtime": "fake",
+            "workspace": {
+                "root": str(workspace),
+                "checks": {"build": {"argv": ["make"]}, "test": {"argv": ["make", "test"]}},
+            },
+            "planner": {"mode": "iterative"},
+        },
+        auto_accept_reviews=False,
+    )
+    agent = lab.create_agent(workspace_root=workspace)
+    task = agent.create_task(title="Signed parser", description=instruction)
+
+    result = build_planner(lab.config).propose(agent, task, instruction=instruction)
+
+    assert result.ok and result.proposal is not None
+    actions = result.proposal.action_plan.actions
+    assert [action.action_type for action in actions] == [
+        "replace_text",
+        "replace_text",
+        "run_check",
+        "run_check",
+        "git_diff",
+    ]
+    assert result.proposal.status.value == "proposed"
+    assert task.status == TaskStatus.CREATED
+    assert (workspace / "src" / "parser.c").read_text() == "unsigned long limit = LONG_MAX;\n"

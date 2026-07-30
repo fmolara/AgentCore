@@ -4,6 +4,11 @@ Planner v2 adds bounded workspace discovery before producing a reviewable
 `ActionPlan`. It is available as `planner.mode: iterative`; `simple` remains
 the compatibility default.
 
+Candidates pass through bounded finalization before `plan.proposed`. See
+[Planner v2 Finalization](PLANNER_FINALIZATION.md) for compact-edit
+diagnostics, phase budgets, structured-output recovery, independent review,
+and the single-revision policy.
+
 ## State Machine
 
 Every model response selects one explicit phase:

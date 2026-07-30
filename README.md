@@ -305,6 +305,7 @@ Milestone 1 architecture documents:
 - [Coding Workspace](docs/architecture/CODING_WORKSPACE.md)
 - [Local Mode](docs/architecture/LOCAL_MODE.md)
 - [Planner v2](docs/architecture/PLANNER_V2.md)
+- [Planner v2 Finalization](docs/architecture/PLANNER_FINALIZATION.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)
