@@ -101,8 +101,9 @@ class ScriptedRuntime(Runtime):
 
     def _next(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        if self.auto_accept_reviews and prompt.startswith(
-            "You are an independent AgentCore candidate-plan reviewer."
+        if self.auto_accept_reviews and (
+            prompt.startswith("You are an independent AgentCore candidate-plan reviewer.")
+            or prompt.startswith("Independently review the complete candidate")
         ):
             return json.dumps(
                 {
@@ -324,12 +325,14 @@ def test_iterative_planner_explores_then_returns_complete_proposal(tmp_path) -> 
     assert isinstance(runtime, ScriptedRuntime)
     assert len(runtime.prompts) == 3
     assert all(prompt.count(instruction) == 1 for prompt in runtime.prompts)
-    assert all("Allowed exploration actions:" in prompt for prompt in runtime.prompts[:2])
-    assert "independent AgentCore candidate-plan reviewer" in runtime.prompts[2]
+    assert "list_directory" in runtime.prompts[0]
+    assert "replace_text" in runtime.prompts[1]
+    assert "list_directory" not in runtime.prompts[1]
+    assert "Independently review the complete candidate" in runtime.prompts[2]
     assert str(workspace) in runtime.prompts[0]
     assert str(workspace) in runtime.prompts[1]
     assert "src/parser.c" in runtime.prompts[1]
-    assert "remaining_budget" in runtime.prompts[1]
+    assert "REMAINING BUDGET" in runtime.prompts[1]
 
     event_types = [event.event_type for event in events]
     assert event_types.count("planning.started") == 1
@@ -568,7 +571,7 @@ def test_max_rounds_fails_without_starting_task(tmp_path) -> None:
     assert [event.event_type for event in sink.events].count("planning.failed") == 1
     runtime = lab.runtime
     assert isinstance(runtime, ScriptedRuntime)
-    assert "phase MUST be \"final\" or \"cannot_plan\"" in runtime.prompts[-1]
+    assert "Produce a complete executable FINAL plan, or cannot_plan" in runtime.prompts[-1]
 
 
 def test_multiple_exploration_rounds_feed_only_new_observations(tmp_path) -> None:
@@ -877,7 +880,16 @@ def test_generation_budget_is_capped_to_remaining_context(tmp_path, monkeypatch)
             "runtime": "fake",
             "workspace": {"root": str(workspace)},
             "context": {"max_context_tokens": 1200},
-            "planner": {"mode": "iterative", "max_tokens": 500},
+            "planner": {
+                "mode": "iterative",
+                "max_tokens": 500,
+                "context": {
+                    "minimum_output_tokens": {
+                        "exploration": 150,
+                        "review": 150,
+                    }
+                },
+            },
         },
     )
     monkeypatch.setattr(lab.runtime, "tokenize", lambda messages: 900)
@@ -888,12 +900,12 @@ def test_generation_budget_is_capped_to_remaining_context(tmp_path, monkeypatch)
     result = build_planner(lab.config).propose(agent, task, instruction="Inspect")
 
     assert result.ok
-    assert lab.runtime.generation_options[0]["max_tokens"] == 268
+    assert lab.runtime.generation_options[0]["max_tokens"] == 172
     budget = next(
         event for event in sink.events if event.event_type == "planning.generation_budget"
     )
     assert budget.payload["requested_max_tokens"] == 500
-    assert budget.payload["effective_max_tokens"] == 268
+    assert budget.payload["effective_max_tokens"] == 172
 
 
 def test_generation_fails_before_model_when_context_is_exhausted(
@@ -1330,4 +1342,98 @@ def test_signed_parser_scripted_regression_rejects_unsafe_then_accepts_compact_r
     ]
     assert result.proposal.status.value == "proposed"
     assert task.status == TaskStatus.CREATED
-    assert (workspace / "src" / "parser.c").read_text() == "unsigned long limit = LONG_MAX;\n"
+
+
+def test_4096_context_compacts_signed_parser_and_reaches_review(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _prepare_parser_workspace(workspace)
+    instruction = (
+        "Add one optional sign. Preserve LONG_MAX and LONG_MIN portably. "
+        "Run the configured build check and configured test check."
+    )
+    responses = [
+        _explore_response(
+            {"type": "read_file", "path": "src/parser.c", "max_lines": 200},
+            {"type": "read_file", "path": "include/parser.h", "max_lines": 100},
+            {"type": "read_file", "path": "tests/test_parser.c", "max_lines": 200},
+        ),
+        _final_response(
+            {
+                "type": "replace_text",
+                "path": "src/parser.c",
+                "old": "unsigned long result = 0;",
+                "new": "unsigned long result = 0;\\n    int negative = 0;",
+            },
+            {
+                "type": "replace_text",
+                "path": "tests/test_parser.c",
+                "old": 'assert(parse(\"0x1a\"));',
+                "new": 'assert(parse(\"0x1a\"));\\nassert(parse(\"-0x1A\"));',
+            },
+            {"type": "run_check", "check": "build"},
+            {"type": "run_check", "check": "test"},
+            {"type": "git_diff"},
+        ),
+        _review_accept(),
+    ]
+    config = {
+        "runtime": "fake",
+        "context": {"max_context_tokens": 4096},
+        "workspace": {
+            "root": str(workspace),
+            "checks": {"build": {"argv": ["make"]}, "test": {"argv": ["make", "test"]}},
+        },
+        "planner": {"mode": "iterative"},
+    }
+    lab = _lab(workspace, responses, config=config, auto_accept_reviews=False)
+    lab.runtime.tokenize = lambda value: max(1, len(json.dumps(value, sort_keys=True)) // 4)
+    sink = ListEventSink()
+    agent = lab.create_agent(workspace_root=workspace, event_sink=sink)
+    task = agent.create_task(title="Signed parser", description=instruction)
+
+    result = build_planner(config).propose(agent, task, instruction=instruction)
+
+    assert result.ok and result.proposal is not None
+    preflights = [
+        event.payload for event in sink.events
+        if event.event_type == "planning.context.preflight"
+    ]
+    final = next(item for item in preflights if item["phase"] == "final_candidate")
+    assert final["effective_output_tokens"] >= 1500
+    assert all(prompt.count(instruction) == 1 for prompt in lab.runtime.prompts)
+    assert "list_directory" not in lab.runtime.prompts[1]
+    assert task.status == TaskStatus.CREATED
+    assert subprocess.check_output(["git", "status", "--short"], cwd=workspace, text=True) == ""
+
+
+def test_large_malformed_output_has_bounded_recovery_context(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    instruction = "Inspect safely"
+    malformed = '{"phase":"final","plan":{"actions":[{"content":"' + ("x" * 50000)
+    lab = _lab(
+        workspace,
+        [malformed, _final_response({"type": "git_diff"}), _review_accept()],
+        config={
+            "runtime": "fake",
+            "context": {"max_context_tokens": 4096},
+            "workspace": {"root": str(workspace)},
+            "planner": {"mode": "iterative"},
+        },
+        auto_accept_reviews=False,
+    )
+    lab.runtime.tokenize = lambda value: max(1, len(json.dumps(value, sort_keys=True)) // 4)
+    agent = lab.create_agent(workspace_root=workspace)
+    task = agent.create_task(title="Inspect", description=instruction)
+
+    result = build_planner(lab.config).propose(agent, task, instruction=instruction)
+
+    assert result.ok
+    assert len(lab.runtime.prompts) == 3
+    recovery = lab.runtime.prompts[1]
+    assert len(recovery) < 5000
+    # A tiny first-round prompt may incur the documented strict-schema overhead.
+    assert len(recovery) <= len(lab.runtime.prompts[0]) + 512
+    assert "x" * 1000 not in recovery
+    assert recovery.count(instruction) == 1

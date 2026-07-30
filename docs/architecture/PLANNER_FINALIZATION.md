@@ -31,13 +31,52 @@ available output budget is below the configured safe minimum.
 `planning.generation_budget` records the phase, requested and effective limits,
 minimum, prompt size, and context size.
 
+## Context Capacity
+
+Planner v2 distinguishes the active runtime capacity from model architecture
+metadata. Trusted AgentCore configuration and reliable runtime-reported
+capacity are combined using the lower value. Model `max_position_embeddings`
+is diagnostic only. When neither active source is available, Planner v2 uses a
+documented conservative 4096-token compatibility fallback.
+
+Before each request, Planner v2 tokenizes the exact rendered chat request and
+emits `planning.context.preflight`. The event records section counts, context
+source, safety margin, requested output, safe minimum, and effective output.
+No request is sent below its phase minimum.
+
+The configuration order is:
+
+1. phase values under `planner.context`;
+2. legacy `planner.finalization.budgets` and `minimum_tokens`, when present;
+3. compatibility defaults derived from `planner.max_tokens`.
+
+## Evidence Packs
+
+Full bounded observations remain in exploration events. Later model calls use
+deterministic `EvidencePack` objects containing observation IDs, normalized
+paths, digests, exact line-numbered spans, omitted ranges, and selection
+reasons. File role, recent successful reads, search/listing results, and
+filtered task terms drive selection. No embedding or additional model call is
+used.
+
+Four finite compaction levels progressively remove lower-priority evidence and
+reduce span context. Each level is rendered and tokenized before selection.
+Evidence events contain IDs, ranges, digests, and truncation metadata, not a
+second copy of file contents.
+
+Exploration, final generation, review, revision, final review, and recovery
+use phase-specific instructions and schemas. The verbatim original task occurs
+once in every stateless request.
+
 ## Format Recovery
 
 Malformed structured output receives exactly one recovery attempt for that
 step. Recovery uses a fresh model session and requests a complete replacement
 JSON object. AgentCore never appends to, guesses, parses actions from, or
 executes the malformed fragment. A second malformed response fails planning.
-Malformed output retained in events is bounded.
+Malformed output retained in events is bounded. The recovery prompt contains
+only the parse diagnostic, SHA-256 digest, and independently bounded prefix
+and suffix excerpts. It never carries the complete malformed action payload.
 
 ## Independent Review
 
