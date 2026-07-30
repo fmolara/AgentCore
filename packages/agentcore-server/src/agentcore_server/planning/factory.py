@@ -27,9 +27,20 @@ def build_planner(
     checks = workspace_config.get("checks", {}) if isinstance(workspace_config, dict) else {}
     if not isinstance(checks, dict):
         raise ValueError("workspace checks configuration must be a mapping")
+    finalization = planner_config.get("finalization", {})
+    if not isinstance(finalization, dict):
+        raise ValueError("planner finalization configuration must be a mapping")
+    budgets = finalization.get("budgets", {})
+    minimum_tokens = finalization.get("minimum_tokens", {})
+    if not isinstance(budgets, dict) or not isinstance(minimum_tokens, dict):
+        raise ValueError("planner finalization budgets and minimum_tokens must be mappings")
     return IterativeLLMPlanner(
         max_tokens=max_tokens,
         temperature=temperature,
         limits=ExplorationLimits.from_config(planner_config.get("exploration")),
         check_names=tuple(checks),
+        phase_budgets=budgets,
+        minimum_phase_tokens=minimum_tokens,
+        max_action_payload_bytes=finalization.get("max_action_payload_bytes", 16384),
+        forbid_existing_file_write=finalization.get("forbid_existing_file_write", False),
     )

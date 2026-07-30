@@ -22,6 +22,23 @@ planner:
   mode: iterative
   max_tokens: 1024
   temperature: 0
+  finalization:
+    budgets:
+      exploration: 1024
+      final_candidate: 2048
+      format_recovery: 2048
+      review: 768
+      revision: 2048
+      final_review: 768
+    minimum_tokens:
+      exploration: 128
+      final_candidate: 512
+      format_recovery: 512
+      review: 192
+      revision: 512
+      final_review: 192
+    max_action_payload_bytes: 16384
+    forbid_existing_file_write: false
   exploration:
     max_rounds: 3
     max_actions_per_round: 8
