@@ -43,8 +43,11 @@ class GitWorkspace:
     def status(self) -> GitResult:
         return self._run(["status", "--short"])
 
-    def diff(self) -> GitResult:
-        return self._run(["diff", "--"])
+    def diff(self, path: str | Path | None = None) -> GitResult:
+        args = ["diff", "--"]
+        if path is not None:
+            args.append(self._relative_path(path))
+        return self._run(args)
 
     def add(self, paths: str | Path | Sequence[str | Path]) -> GitResult:
         self.workspace._require_writable()

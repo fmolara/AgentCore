@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import fnmatch
-import heapq
 import json
-import os
-from pathlib import Path
-from typing import Iterable
 
 from agentcore_server.planning.exploration import (
     ExplorationAction,
@@ -17,6 +12,7 @@ from agentcore_server.planning.exploration import (
     SearchFilesAction,
 )
 from agentcore_server.workspace import Workspace
+from agentcore_server.workspace.discovery import DiscoveryLimits, WorkspaceDiscovery
 
 
 class ExplorationError(RuntimeError):
@@ -42,6 +38,20 @@ class WorkspaceExplorer:
         self.limits = limits
         self.total_actions = 0
         self.total_observation_bytes = 0
+        self.discovery = WorkspaceDiscovery(
+            workspace,
+            limits=DiscoveryLimits(
+                max_directory_depth=limits.max_directory_depth,
+                max_files_returned=limits.max_files_returned,
+                max_search_files_scanned=limits.max_search_files_scanned,
+                max_search_bytes=limits.max_search_bytes,
+                max_single_file_bytes=min(
+                    limits.max_single_file_bytes,
+                    limits.max_observation_text_per_action,
+                ),
+                max_read_lines=max(1, limits.max_observation_text_per_action),
+            ),
+        )
 
     def execute(self, plan: ExplorationPlan) -> tuple[tuple[ExplorationObservation, ...], int]:
         self.validate(plan)
@@ -117,283 +127,48 @@ class WorkspaceExplorer:
         return self._read_file(action)
 
     def _list_directory(self, action: ListDirectoryAction) -> ExplorationObservation:
-        root = self.workspace._resolve(action.path)
-        if not root.exists():
-            return ExplorationObservation.failed(action, error="path does not exist")
-        if not root.is_dir():
-            return ExplorationObservation.failed(action, error="path is not a directory")
-
-        entries: list[dict[str, object]] = []
-        truncated = False
-        stack: list[tuple[Path, int]] = [(root, 0)]
-        while stack:
-            directory, depth = stack.pop()
-            remaining = self.limits.max_files_returned - len(entries)
-            try:
-                children = heapq.nsmallest(
-                    remaining + 1,
-                    (
-                        child
-                        for child in directory.iterdir()
-                        if child.name != ".git"
-                        and (action.include_hidden or not child.name.startswith("."))
-                    ),
-                    key=lambda path: path.name,
-                )
-            except OSError as exc:
-                return ExplorationObservation.failed(
-                    action,
-                    error=f"unable to list directory: {exc}",
-                    data={"path": action.path, "entries": entries},
-                )
-            if len(children) > remaining:
-                children = children[:remaining]
-                truncated = True
-            descend: list[Path] = []
-            for child in children:
-                relative = child.relative_to(self.workspace.root).as_posix()
-                is_symlink = child.is_symlink()
-                if is_symlink:
-                    kind = "symlink"
-                    try:
-                        target = child.resolve(strict=True)
-                        inside = target == self.workspace.root or self.workspace.root in target.parents
-                    except OSError:
-                        inside = False
-                    entry = {"path": relative, "kind": kind, "target_inside_workspace": inside}
-                elif child.is_dir():
-                    entry = {"path": relative, "kind": "directory"}
-                    if depth < action.max_depth:
-                        descend.append(child)
-                else:
-                    entry = {"path": relative, "kind": "file"}
-                entries.append(entry)
-                if len(entries) >= self.limits.max_files_returned:
-                    truncated = True
-                    break
-            if truncated:
-                break
-            for child in reversed(descend):
-                stack.append((child, depth + 1))
-
-        return ExplorationObservation.ok(
+        return self._observation(
             action,
-            data={
-                "path": action.path,
-                "entries": entries,
-                "max_depth": action.max_depth,
-                "include_hidden": action.include_hidden,
-                "skipped_git": True,
-            },
-            truncated=truncated,
+            self.discovery.list_directory(
+                action.path,
+                max_depth=action.max_depth,
+                include_hidden=action.include_hidden,
+            ),
         )
 
     def _search_files(self, action: SearchFilesAction) -> ExplorationObservation:
-        root = self.workspace._resolve(action.root)
-        if not root.exists():
-            return ExplorationObservation.failed(action, error="root does not exist")
-        if not root.is_dir():
-            return ExplorationObservation.failed(action, error="root is not a directory")
-
-        matches: list[dict[str, object]] = []
-        skipped_binary: list[str] = []
-        skipped_encoding: list[str] = []
-        skipped_symlink: list[str] = []
-        truncated = False
-        truncation_reasons: set[str] = set()
-        files_scanned = 0
-        content_bytes_scanned = 0
-        for path in self._iter_search_files(root, skipped_symlink):
-            if files_scanned >= self.limits.max_search_files_scanned:
-                truncated = True
-                truncation_reasons.add("max_search_files_scanned")
-                break
-            files_scanned += 1
-            relative = path.relative_to(self.workspace.root).as_posix()
-            if not fnmatch.fnmatch(path.name, action.name_pattern):
-                continue
-            if action.content_query is not None:
-                remaining_bytes = self.limits.max_search_bytes - content_bytes_scanned
-                if remaining_bytes <= 0:
-                    truncated = True
-                    truncation_reasons.add("max_search_bytes")
-                    break
-                status, found, was_truncated, bytes_read = self._contains_text(
-                    path,
-                    action.content_query,
-                    max_bytes=remaining_bytes,
-                )
-                content_bytes_scanned += bytes_read
-                if status == "binary":
-                    skipped_binary.append(relative)
-                    continue
-                if status == "encoding":
-                    skipped_encoding.append(relative)
-                    continue
-                if not found:
-                    if content_bytes_scanned >= self.limits.max_search_bytes:
-                        truncated = True
-                        truncation_reasons.add("max_search_bytes")
-                        break
-                    continue
-            else:
-                was_truncated = False
-            matches.append({"path": relative, "content_scan_truncated": was_truncated})
-            if len(matches) >= action.max_results:
-                truncated = True
-                truncation_reasons.add("max_results")
-                break
-            if (
-                action.content_query is not None
-                and content_bytes_scanned >= self.limits.max_search_bytes
-            ):
-                truncated = True
-                truncation_reasons.add("max_search_bytes")
-                break
-
-        return ExplorationObservation.ok(
+        return self._observation(
             action,
-            data={
-                "root": action.root,
-                "name_pattern": action.name_pattern,
-                "content_query": action.content_query,
-                "matches": matches,
-                "skipped_binary": skipped_binary,
-                "skipped_encoding": skipped_encoding,
-                "skipped_symlink": skipped_symlink,
-                "pattern_semantics": "glob against basename",
-                "hidden_files": "excluded",
-                "max_directory_depth": self.limits.max_directory_depth,
-                "files_scanned": files_scanned,
-                "content_bytes_scanned": content_bytes_scanned,
-                "max_search_files_scanned": self.limits.max_search_files_scanned,
-                "max_search_bytes": self.limits.max_search_bytes,
-                "truncation_reasons": sorted(truncation_reasons),
-            },
-            truncated=truncated,
+            self.discovery.search_files(
+                action.root,
+                name_pattern=action.name_pattern,
+                content_query=action.content_query,
+                max_results=action.max_results,
+            ),
         )
-
-    def _iter_search_files(
-        self,
-        root: Path,
-        skipped_symlink: list[str],
-    ) -> Iterable[Path]:
-        for directory, dirnames, filenames in os.walk(root, followlinks=False):
-            current = Path(directory)
-            relative_parts = current.relative_to(root).parts
-            if len(relative_parts) > self.limits.max_directory_depth:
-                dirnames[:] = []
-                continue
-            retained_dirs: list[str] = []
-            for name in sorted(dirnames):
-                path = current / name
-                if name == ".git" or name.startswith("."):
-                    continue
-                if path.is_symlink():
-                    skipped_symlink.append(
-                        path.relative_to(self.workspace.root).as_posix()
-                    )
-                    continue
-                retained_dirs.append(name)
-            dirnames[:] = retained_dirs
-            for filename in sorted(filenames):
-                if filename.startswith("."):
-                    continue
-                path = current / filename
-                if path.is_symlink():
-                    skipped_symlink.append(
-                        path.relative_to(self.workspace.root).as_posix()
-                    )
-                    continue
-                yield path
-
-    def _contains_text(
-        self,
-        path: Path,
-        query: str,
-        *,
-        max_bytes: int,
-    ) -> tuple[str, bool, bool, int]:
-        limit = min(self.limits.max_single_file_bytes, max_bytes)
-        try:
-            with path.open("rb") as stream:
-                raw = stream.read(limit + 1)
-        except OSError:
-            return "encoding", False, False, 0
-        truncated = len(raw) > limit
-        raw = raw[:limit]
-        if b"\0" in raw:
-            return "binary", False, truncated, len(raw)
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return "encoding", False, truncated, len(raw)
-        return "text", query in text, truncated, len(raw)
 
     def _read_file(self, action: ExploreReadFileAction) -> ExplorationObservation:
-        path = self.workspace._resolve(action.path)
-        if not path.exists():
-            return ExplorationObservation.failed(action, error="file does not exist")
-        if path.is_dir():
-            return ExplorationObservation.failed(action, error="read_file target is a directory")
-        if not path.is_file():
-            return ExplorationObservation.failed(action, error="path is not a regular file")
-
-        byte_limit = min(
-            action.max_bytes or self.limits.max_single_file_bytes,
-            self.limits.max_single_file_bytes,
-            self.limits.max_observation_text_per_action,
+        result = self.discovery.read_file(
+            action.path,
+            start_line=action.start_line,
+            max_lines=action.max_lines or self.discovery.limits.max_read_lines,
+            max_bytes=action.max_bytes,
         )
-        try:
-            with path.open("rb") as stream:
-                raw = stream.read(byte_limit + 1)
-        except OSError as exc:
-            return ExplorationObservation.failed(action, error=f"unable to read file: {exc}")
-        truncated = len(raw) > byte_limit
-        raw = raw[:byte_limit]
-        if b"\0" in raw:
-            return ExplorationObservation.failed(
+        data = dict(result.data)
+        if "content" in data:
+            data["text"] = data.pop("content")
+        return self._observation(action, result, data=data)
+
+    @staticmethod
+    def _observation(action, result, *, data=None) -> ExplorationObservation:
+        payload = dict(result.data) if data is None else data
+        if result.success:
+            return ExplorationObservation.ok(
                 action,
-                error="file appears to be binary",
-                data={"encoding": None},
+                data=payload,
+                truncated=result.truncated,
             )
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            if truncated and exc.end == len(raw):
-                text = raw[: exc.start].decode("utf-8")
-            else:
-                return ExplorationObservation.failed(
-                    action,
-                    error="file is not valid UTF-8",
-                    data={"encoding": "utf-8"},
-                )
-
-        lines = text.splitlines(keepends=True)
-        start = action.start_line - 1
-        selected = lines[start:]
-        if action.max_lines is not None and len(selected) > action.max_lines:
-            selected = selected[: action.max_lines]
-            truncated = True
-        selected_text = "".join(selected)
-        encoded = selected_text.encode("utf-8")
-        if len(encoded) > self.limits.max_observation_text_per_action:
-            encoded = encoded[: self.limits.max_observation_text_per_action]
-            selected_text = encoded.decode("utf-8", errors="ignore")
-            truncated = True
-
-        return ExplorationObservation.ok(
-            action,
-            data={
-                "path": action.path,
-                "start_line": action.start_line,
-                "lines_returned": len(selected_text.splitlines()),
-                "bytes_returned": len(selected_text.encode("utf-8")),
-                "encoding": "utf-8",
-                "text": selected_text,
-            },
-            truncated=truncated,
-        )
+        return ExplorationObservation.failed(action, error=result.error or "discovery failed", data=payload)
 
 
 def _json_size(data: dict[str, object]) -> int:

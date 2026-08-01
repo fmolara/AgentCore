@@ -46,6 +46,31 @@ def test_file_workspace_replace_missing_text(tmp_path) -> None:
         workspace.files.replace_text("main.c", "return 7", "return 2")
 
 
+def test_file_workspace_unique_replace_rejects_zero_and_multiple_matches(tmp_path) -> None:
+    workspace = Workspace(tmp_path / "project")
+    workspace.files.write_text("main.c", "one one\n")
+
+    with pytest.raises(ValueError, match="not found"):
+        workspace.files.replace_text_unique("main.c", "missing", "new")
+    assert workspace.files.read_text("main.c") == "one one\n"
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        workspace.files.replace_text_unique("main.c", "one", "new")
+    assert workspace.files.read_text("main.c") == "one one\n"
+
+
+def test_file_workspace_unique_replace_reports_local_context(tmp_path) -> None:
+    workspace = Workspace(tmp_path / "project")
+    workspace.files.write_text("main.c", "zero\none\ntwo\n")
+
+    result = workspace.files.replace_text_unique("main.c", "one", "changed")
+
+    assert result.match_count == 1
+    assert result.affected_start_line == 2
+    assert "changed" in (result.context or "")
+    assert workspace.files.read_text("main.c") == "zero\nchanged\ntwo\n"
+
+
 def test_file_workspace_read_line_ranges_and_write_lines(tmp_path) -> None:
     workspace = Workspace(tmp_path / "project")
     result = workspace.files.write_lines("notes.txt", ["zero", "one", "two", "three"])

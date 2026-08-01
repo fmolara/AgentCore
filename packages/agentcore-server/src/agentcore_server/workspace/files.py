@@ -17,6 +17,12 @@ class FileEditResult:
     lines_written: int = 0
     replacements: int = 0
     files_changed: tuple[str, ...] = ()
+    match_count: int | None = None
+    changed_bytes: int = 0
+    changed_lines: int = 0
+    affected_start_line: int | None = None
+    affected_end_line: int | None = None
+    context: str | None = None
 
 
 class FileWorkspace:
@@ -77,6 +83,55 @@ class FileWorkspace:
             lines_written=len(updated.splitlines()),
             replacements=replacements,
             files_changed=(self._display_path(resolved),),
+        )
+
+    def replace_text_unique(
+        self,
+        path: str | Path,
+        old: str,
+        new: str,
+        *,
+        encoding: str = "utf-8",
+        context_lines: int = 3,
+    ) -> FileEditResult:
+        self.workspace._require_writable()
+        if old == "":
+            raise ValueError("old text must not be empty")
+        resolved = self.workspace._resolve(path)
+        original = resolved.read_text(encoding=encoding)
+        matches = original.count(old)
+        display = self._display_path(resolved)
+        if matches == 0:
+            raise ValueError(f"exact edit text not found in {display}")
+        if matches > 1:
+            raise ValueError(f"exact edit is ambiguous in {display}: {matches} matches")
+        offset = original.index(old)
+        start_line = original.count("\n", 0, offset) + 1
+        changed_lines = max(len(old.splitlines()), len(new.splitlines()), 1)
+        updated = original[:offset] + new + original[offset + len(old):]
+        written = resolved.write_text(updated, encoding=encoding)
+        lines = updated.splitlines()
+        context_start = max(start_line - context_lines - 1, 0)
+        context_end = min(start_line + changed_lines + context_lines - 1, len(lines))
+        context = "\n".join(
+            f"{number:>6} | {line}"
+            for number, line in enumerate(
+                lines[context_start:context_end], start=context_start + 1
+            )
+        )
+        return FileEditResult(
+            operation="replace_text_unique",
+            path=display,
+            bytes_written=written,
+            lines_written=len(lines),
+            replacements=1,
+            files_changed=(display,),
+            match_count=1,
+            changed_bytes=len(new.encode(encoding)) - len(old.encode(encoding)),
+            changed_lines=changed_lines,
+            affected_start_line=start_line,
+            affected_end_line=start_line + changed_lines - 1,
+            context=context,
         )
 
     def read_lines(
