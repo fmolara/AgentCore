@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -9,6 +10,12 @@ from transformers import AutoTokenizer
 from agentcore_server.generation.config import GenerationConfig
 from agentcore_server.generation.result import GenerationMetrics, GenerationResult
 from agentcore_server.generation.stream import StreamChunk
+from agentcore_server.generation.tools import (
+    AssistantTurn,
+    ToolCall,
+    ToolCallDelta,
+    ToolTurnChunk,
+)
 from agentcore_server.logging.events import generation_event
 from agentcore_server.logging.writer import JsonlWriter
 from agentcore_server.runtime.base import Runtime
@@ -178,11 +185,155 @@ class SGLangRuntime(Runtime):
     def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[StreamChunk]:
         yield from self._stream(session, prompt, event_type="generation", **kwargs)
 
+    def stream_tool_turn(
+        self,
+        session: Session,
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> Iterator[ToolTurnChunk]:
+        if not self.ready():
+            raise RuntimeError("SGLang server is not ready")
+        generation = GenerationConfig.from_dict(self.config.get("generation", {})).override(**kwargs)
+        messages = session.transcript()
+        prompt_tokens = self.tokenize(messages, generation=generation, tools=tools)
+        yield ToolTurnChunk.started(
+            metadata={"prompt_tokens": prompt_tokens, "runtime": "sglang"}
+        )
+        payload = {
+            "model": self.config.get("model", {}).get("name", self.config["model"]["path"]),
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "temperature": generation.temperature,
+            "top_p": generation.top_p,
+            "max_tokens": generation.max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "chat_template_kwargs": {"enable_thinking": generation.enable_thinking},
+        }
+
+        start = time.perf_counter()
+        first_token_at: float | None = None
+        text_parts: list[str] = []
+        call_parts: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        usage: dict[str, Any] | None = None
+        for event in self.server.stream_chat_events(payload):
+            if event.get("usage"):
+                usage = event["usage"]
+            for choice in event.get("choices", []):
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+                if content:
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                    text_parts.append(content)
+                    yield ToolTurnChunk.text(content)
+                for raw_call in delta.get("tool_calls") or []:
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                    index = raw_call.get("index")
+                    if not isinstance(index, int) or isinstance(index, bool):
+                        raise RuntimeError("SGLang returned a tool call without a valid index")
+                    current = call_parts.setdefault(
+                        index, {"id": None, "name": None, "arguments": []}
+                    )
+                    function = raw_call.get("function") or {}
+                    if raw_call.get("id"):
+                        current["id"] = raw_call["id"]
+                    if function.get("name"):
+                        current["name"] = function["name"]
+                    argument_delta = function.get("arguments") or ""
+                    current["arguments"].append(argument_delta)
+                    yield ToolTurnChunk.tool_delta(
+                        ToolCallDelta(
+                            index=index,
+                            id=raw_call.get("id"),
+                            function_name=function.get("name"),
+                            arguments_delta=argument_delta,
+                        )
+                    )
+                if choice.get("finish_reason") is not None:
+                    finish_reason = choice["finish_reason"]
+        end = time.perf_counter()
+
+        calls = tuple(self._assemble_tool_call(index, item) for index, item in sorted(call_parts.items()))
+        text = "".join(text_parts)
+        generated_tokens = (
+            int(usage.get("completion_tokens", 0))
+            if usage is not None
+            else len(
+                self.tokenizer.encode(
+                    text + "".join(call.argument_text for call in calls),
+                    add_special_tokens=False,
+                )
+            )
+        )
+        if usage is not None:
+            prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens))
+        ttft = None if first_token_at is None else first_token_at - start
+        decode_sec = None if first_token_at is None else max(end - first_token_at, 1e-9)
+        metrics = GenerationMetrics(
+            prompt_tokens=prompt_tokens,
+            generated_tokens=generated_tokens,
+            ttft_sec=ttft,
+            tokens_per_sec=0.0 if decode_sec is None else generated_tokens / decode_sec,
+            wall_sec=end - start,
+        )
+        turn = AssistantTurn(
+            text=text,
+            tool_calls=calls,
+            finish_reason=finish_reason,
+            metrics=metrics,
+        )
+        if calls:
+            session.add_assistant_tool_message(text, calls)
+        else:
+            session.add_assistant_message(text)
+        if self.log_writer is not None:
+            result = GenerationResult(text=text, metrics=metrics)
+            self.log_writer.write(
+                generation_event("sglang", session, result, self.health(), event_type="tool_turn")
+            )
+        yield ToolTurnChunk.completed(turn)
+
+    @staticmethod
+    def _assemble_tool_call(index: int, item: dict[str, Any]) -> ToolCall:
+        call_id = item.get("id")
+        name = item.get("name")
+        argument_text = "".join(item.get("arguments", []))
+        error: str | None = None
+        arguments: dict[str, Any] | None = None
+        if not isinstance(call_id, str) or not call_id:
+            error = "tool call ID is missing"
+            call_id = f"invalid_{index}"
+        elif not isinstance(name, str) or not name:
+            error = "tool function name is missing"
+            name = ""
+        else:
+            try:
+                parsed = json.loads(argument_text)
+                if not isinstance(parsed, dict):
+                    raise ValueError("tool arguments must decode to an object")
+                arguments = parsed
+            except (json.JSONDecodeError, ValueError) as exc:
+                error = f"invalid tool arguments: {exc}"
+        return ToolCall(
+            id=call_id,
+            index=index,
+            function_name=name,
+            argument_text=argument_text,
+            arguments=arguments,
+            parsing_error=error,
+        )
+
     def tokenize(
         self,
         text_or_messages: Any,
         *,
         generation: GenerationConfig | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> int:
         if self.tokenizer is None:
             raise RuntimeError("runtime is not loaded")
@@ -195,12 +346,14 @@ class SGLangRuntime(Runtime):
                     tokenize=False,
                     add_generation_prompt=True,
                     enable_thinking=generation.enable_thinking,
+                    tools=tools,
                 )
             except TypeError:
                 text = self.tokenizer.apply_chat_template(
                     text_or_messages,
                     tokenize=False,
                     add_generation_prompt=True,
+                    tools=tools,
                 )
             return len(self.tokenizer.encode(text, add_special_tokens=False))
         return len(self.tokenizer.encode(str(text_or_messages), add_special_tokens=False))
@@ -238,6 +391,9 @@ class SGLangRuntime(Runtime):
         reasoning_parser = server_cfg.get("reasoning_parser")
         if reasoning_parser:
             cmd.extend(["--reasoning-parser", str(reasoning_parser)])
+        tool_call_parser = server_cfg.get("tool_call_parser")
+        if tool_call_parser:
+            cmd.extend(["--tool-call-parser", str(tool_call_parser)])
         model_name = model_cfg.get("name")
         if model_name:
             cmd.extend(["--served-model-name", str(model_name)])

@@ -2,16 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
+
+from agentcore_server.generation.tools import ToolCall, ToolResult
 
 
 @dataclass
 class Message:
     role: str
-    content: str
+    content: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_success: bool | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+    def as_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            data["tool_calls"] = [call.as_openai_dict() for call in self.tool_calls]
+        if self.tool_call_id is not None:
+            data["tool_call_id"] = self.tool_call_id
+        return data
 
 
 @dataclass
@@ -35,7 +47,23 @@ class Session:
         self.messages.append(Message(role="assistant", content=text))
         self._touch()
 
-    def transcript(self) -> list[dict[str, str]]:
+    def add_assistant_tool_message(self, text: str, tool_calls: tuple[ToolCall, ...]) -> None:
+        self.messages.append(Message(role="assistant", content=text, tool_calls=tool_calls))
+        self._touch()
+
+    def add_tool_result(self, result: ToolResult) -> None:
+        self.messages.append(
+            Message(
+                role="tool",
+                content=result.content,
+                tool_call_id=result.tool_call_id,
+                tool_name=result.tool_name,
+                tool_success=result.success,
+            )
+        )
+        self._touch()
+
+    def transcript(self) -> list[dict[str, Any]]:
         return [message.as_dict() for message in self.messages]
 
     @property

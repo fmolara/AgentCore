@@ -5,6 +5,7 @@ from typing import Any, Iterator
 
 from agentcore_server.generation.result import GenerationResult
 from agentcore_server.generation.stream import StreamChunk
+from agentcore_server.generation.tools import ToolTurnChunk
 from agentcore_server.sessions.session import Session
 
 
@@ -44,6 +45,14 @@ class Runtime(ABC):
     @abstractmethod
     def tokenize(self, text_or_messages: Any) -> int:
         raise NotImplementedError
+
+    def stream_tool_turn(
+        self,
+        session: Session,
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> Iterator[ToolTurnChunk]:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support native tool turns")
 
     @abstractmethod
     def statistics(self) -> dict[str, Any]:

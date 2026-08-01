@@ -118,6 +118,12 @@ class ServerProcess:
         }
 
     def stream_chat(self, payload: dict[str, Any]) -> Iterator[str]:
+        for obj in self.stream_chat_events(payload):
+            choice = obj.get("choices", [{}])[0] if obj.get("choices") else {}
+            delta = choice.get("delta") or {}
+            yield delta.get("content") or ""
+
+    def stream_chat_events(self, payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
         req = urllib.request.Request(
             f"{self.api_base}/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -132,10 +138,7 @@ class ServerProcess:
                     data = line[6:]
                     if data == "[DONE]":
                         break
-                    obj = json.loads(data)
-                    choice = obj.get("choices", [{}])[0]
-                    delta = choice.get("delta") or {}
-                    yield delta.get("content") or ""
+                    yield json.loads(data)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")
             self.last_error = f"HTTP {exc.code}: {body[:1000]}"
