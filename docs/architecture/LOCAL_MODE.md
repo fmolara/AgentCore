@@ -1,5 +1,9 @@
 # Local AgentCore Mode
 
+The local runner also supports the incremental Qwen native tool workflow
+documented in [QWEN_TOOL_AGENT.md](QWEN_TOOL_AGENT.md). Select it with
+`--agent qwen-tools`; planner modes remain available for compatibility.
+
 AgentCore supports a local orchestration topology in addition to its existing
 HTTP server topology. Local mode belongs to the `agentcore-server`
 distribution; it is not a separate package.
