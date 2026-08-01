@@ -52,6 +52,11 @@ class TerminalRenderer:
             self._assistant_open = False
             self.error(event.payload.get("error", event.summary))
             return
+        if event.event_type == "tool.approval.required":
+            self.heading("Tool approval required")
+            self._write(self.stdout, json.dumps(event.payload, indent=2, sort_keys=True))
+            self._write(self.stdout, "Use /approve or /reject for this concrete tool call.")
+            return
         stream = self.stderr if event.event_type.endswith(".failed") else self.stdout
         self._write(stream, f"[{event.event_type}] {event.summary}")
         if self.debug and event.event_type in _DIAGNOSTIC_EVENTS:

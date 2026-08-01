@@ -3,6 +3,11 @@
 from .app import InvalidProposalError, LocalAgentCoreApp, LocalExecutionHandle
 from .cli import LocalExitCode, main, run_cli
 from .events import LocalEventSink
+from .qwen_tools import (
+    InteractiveToolApprovalGateway,
+    LocalQwenToolApp,
+    LocalQwenToolHandle,
+)
 
 __all__ = [
     "InvalidProposalError",
@@ -10,6 +15,9 @@ __all__ = [
     "LocalEventSink",
     "LocalExecutionHandle",
     "LocalExitCode",
+    "InteractiveToolApprovalGateway",
+    "LocalQwenToolApp",
+    "LocalQwenToolHandle",
     "main",
     "run_cli",
 ]

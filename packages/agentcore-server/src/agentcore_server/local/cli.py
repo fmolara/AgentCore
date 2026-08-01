@@ -14,6 +14,7 @@ from agentcore_server.tasks import TaskStatus
 from .approval import StaticApprovalGateway
 from .app import InvalidProposalError, LocalAgentCoreApp, LocalExecutionHandle
 from .events import LocalEventSink
+from .qwen_tools import LocalQwenToolApp, LocalQwenToolHandle
 from .rendering import TerminalRenderer
 
 
@@ -45,11 +46,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", required=True, help="AgentCore runtime configuration")
     parser.add_argument("--workspace", required=True, help="Local workspace root")
-    parser.add_argument("--system-prompt", default="You are a concise coding agent.")
-    parser.add_argument(
+    parser.add_argument("--system-prompt", help="Override the selected mode's system prompt")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--planner",
         choices=("simple", "iterative"),
         help="Override planner.mode from configuration",
+    )
+    mode_group.add_argument(
+        "--agent",
+        choices=("qwen-tools",),
+        help="Run an incremental native Qwen tool agent instead of a planner workflow",
     )
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Task instruction")
@@ -97,13 +104,21 @@ def run_cli(
     try:
         lab = lab_factory(args.config)
         sink = LocalEventSink(renderer=renderer.render_event, trace_file=args.trace_file)
-        app = LocalAgentCoreApp(
-            lab,
-            workspace=args.workspace,
-            system_prompt=args.system_prompt,
-            planner_mode=args.planner,
-            event_sink=sink,
-        )
+        if args.agent == "qwen-tools":
+            app = LocalQwenToolApp(
+                lab,
+                workspace=args.workspace,
+                system_prompt=args.system_prompt,
+                event_sink=sink,
+            )
+        else:
+            app = LocalAgentCoreApp(
+                lab,
+                workspace=args.workspace,
+                system_prompt=args.system_prompt or "You are a concise coding agent.",
+                planner_mode=args.planner,
+                event_sink=sink,
+            )
     except Exception as exc:
         _render_exception(renderer, exc, debug=args.debug)
         return int(LocalExitCode.CLI_OR_CONFIG_ERROR)
@@ -117,6 +132,17 @@ def run_cli(
             _render_exception(renderer, exc, debug=args.debug)
             return int(LocalExitCode.RUNTIME_UNAVAILABLE)
 
+        if args.agent == "qwen-tools":
+            assert isinstance(app, LocalQwenToolApp)
+            return int(
+                _run_qwen_tools_interactive(
+                    app,
+                    renderer,
+                    instruction=instruction,
+                    stdin=stdin,
+                    stdout=stdout,
+                )
+            )
         if args.proposal_only or args.approve:
             assert instruction is not None
             return int(_run_noninteractive(app, renderer, instruction, args))
@@ -155,6 +181,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise CliUsageError("--proposal-only and --approve cannot be used together")
     if (args.proposal_only or args.approve) and not (args.prompt or args.prompt_file):
         raise CliUsageError("--proposal-only and --approve require --prompt or --prompt-file")
+    if args.agent == "qwen-tools" and (args.proposal_only or args.approve):
+        raise CliUsageError("--agent qwen-tools cannot be combined with --proposal-only or --approve")
     workspace = Path(args.workspace).expanduser()
     if not workspace.exists():
         raise CliUsageError(f"workspace does not exist: {workspace}")
@@ -294,6 +322,90 @@ def _run_interactive(
             renderer.error(f"unknown command: {name}")
 
 
+def _run_qwen_tools_interactive(
+    app: LocalQwenToolApp,
+    renderer: TerminalRenderer,
+    *,
+    instruction: str | None,
+    stdin: TextIO,
+    stdout: TextIO,
+) -> LocalExitCode:
+    renderer.info(
+        "AgentCore Qwen tool mode. Side effects require per-call approval; Git commits are never automatic."
+    )
+    if instruction is None:
+        try:
+            instruction = _read_terminal_line("Task> ", stdin=stdin, stdout=stdout)
+        except EOFError:
+            return LocalExitCode.SUCCESS
+        if not instruction.strip():
+            renderer.error("task instruction must not be empty")
+            return LocalExitCode.CLI_OR_CONFIG_ERROR
+    task = app.create_task(instruction)
+    handle = app.run_async(task, instruction)
+    renderer.info(
+        "Commands: /status /diff /report /approve /reject /abort /quit /help. "
+        "Plain text queues one steering message."
+    )
+    while True:
+        if not handle.running:
+            code = _completed_qwen_handle_code(handle)
+            renderer.show_report(task.report())
+            renderer.show_diff(app.diff())
+            return code
+        try:
+            command = _read_terminal_line("agentcore> ", stdin=stdin, stdout=stdout)
+        except EOFError:
+            app.cancel(task, "terminal input closed")
+            handle.wait()
+            return _completed_qwen_handle_code(handle)
+        if not command.strip():
+            continue
+        if not command.startswith("/"):
+            if app.queue_steering(command):
+                renderer.info("Steering message queued for the next model turn.")
+            else:
+                renderer.error("one steering message is already queued")
+            continue
+        name, _, argument = command.partition(" ")
+        if name == "/help":
+            renderer.info(
+                "/status /diff /report /approve /reject /abort /quit /help; "
+                "plain text queues steering"
+            )
+        elif name == "/status":
+            renderer.show_status(app.status(task))
+        elif name == "/diff":
+            renderer.show_diff(app.diff())
+        elif name == "/report":
+            renderer.show_report(app.report(task))
+        elif name in {"/approve", "/reject"}:
+            pending = app.approval_gateway.wait_for_pending(timeout=1.0)
+            if pending is None:
+                renderer.error("no tool approval is pending")
+                continue
+            try:
+                if name == "/approve":
+                    app.approve_pending()
+                    renderer.info(f"Approved tool call {pending.call.id} only.")
+                else:
+                    app.reject_pending()
+                    renderer.info(f"Rejected tool call {pending.call.id} only.")
+            except ValueError as exc:
+                renderer.error(str(exc))
+        elif name == "/abort":
+            app.cancel(task, argument.strip() or "aborted by local operator")
+            handle.wait()
+            return _completed_qwen_handle_code(handle)
+        elif name == "/quit":
+            if handle.running:
+                app.cancel(task, "local operator quit")
+                handle.wait()
+            return _completed_qwen_handle_code(handle)
+        else:
+            renderer.error(f"unknown command: {name}")
+
+
 def _read_terminal_line(prompt: str, *, stdin: TextIO, stdout: TextIO) -> str:
     stdout.write(prompt)
     stdout.flush()
@@ -315,6 +427,18 @@ def _completed_handle_code(handle: LocalExecutionHandle) -> LocalExitCode:
     if handle.result is None:
         return LocalExitCode.INTERNAL_ERROR
     return _execution_exit_code(handle.result.status)
+
+
+def _completed_qwen_handle_code(handle: LocalQwenToolHandle) -> LocalExitCode:
+    if handle.error is not None:
+        raise handle.error
+    if handle.result is None:
+        return LocalExitCode.INTERNAL_ERROR
+    return {
+        "completed": LocalExitCode.SUCCESS,
+        "failed": LocalExitCode.TASK_FAILED,
+        "cancelled": LocalExitCode.TASK_CANCELLED,
+    }.get(handle.result.status, LocalExitCode.INTERNAL_ERROR)
 
 
 def _execution_exit_code(status: str) -> LocalExitCode:

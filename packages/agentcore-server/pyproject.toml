@@ -48,5 +48,6 @@ where = ["src"]
   "config/lmdeploy-a100.yaml",
   "config/sglang-a100.yaml",
   "config/sglang-a100-iterative.yaml",
+  "config/sglang-qwen-tools.example.yaml",
   "config/transformers-a100.yaml",
 ]
