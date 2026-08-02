@@ -29,6 +29,8 @@ tool_agent:
   max_read_lines: 500
   max_directory_depth: 4
   max_search_results: 100
+  context_safety_margin_tokens: 128
+  minimum_output_tokens: 256
 
 workspace:
   checks:

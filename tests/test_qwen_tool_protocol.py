@@ -3,13 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agentcore_server.generation import ToolCallDelta
-from agentcore_server.runtime.sglang import SGLangRuntime
+from agentcore_server.runtime.sglang import SGLangRuntime, ToolTurnContextCapacityError
 from agentcore_server.sessions import Session
 
 
 class FakeTokenizer:
+    def __init__(self):
+        self.rendered_messages = None
+        self.rendered_tools = None
+
     def apply_chat_template(self, messages, **kwargs):
+        self.rendered_messages = messages
+        self.rendered_tools = kwargs.get("tools")
         return json.dumps({"messages": messages, "tools": kwargs.get("tools")}, sort_keys=True)
 
     def encode(self, text, add_special_tokens=False):
@@ -28,6 +36,22 @@ class FakeServer:
     def stream_chat_events(self, payload):
         self.payload = payload
         yield from self.events
+
+
+class FixedTokenTokenizer(FakeTokenizer):
+    def __init__(self, prompt_tokens: int):
+        super().__init__()
+        self.prompt_tokens = prompt_tokens
+
+    def apply_chat_template(self, messages, **kwargs):
+        super().apply_chat_template(messages, **kwargs)
+        return "exact rendered native request"
+
+    def encode(self, text, add_special_tokens=False):
+        del add_special_tokens
+        if text == "exact rendered native request":
+            return list(range(self.prompt_tokens))
+        return text.split()
 
 
 def chunk(delta=None, finish=None, usage=None):
@@ -118,6 +142,90 @@ def test_role_tool_result_is_sent_with_matching_id_on_next_turn() -> None:
         "content": '{"content":"x"}',
         "tool_call_id": "call_1",
     }
+
+
+def test_tool_turn_clamps_output_to_remaining_context() -> None:
+    runtime = runtime_with([chunk({"content": "done"}), chunk({}, finish="stop")])
+    runtime.config["context"] = {"max_context_tokens": 16384}
+    runtime.config["generation"]["max_tokens"] = 2048
+    runtime.tokenizer = FixedTokenTokenizer(14552)
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+
+    streamed = list(runtime.stream_tool_turn(
+        session,
+        [{"type": "function", "function": {"name": "read_file"}}],
+        context_safety_margin_tokens=128,
+        minimum_output_tokens=256,
+    ))
+
+    assert streamed[0].metadata == {
+        "runtime": "sglang",
+        "context_limit": 16384,
+        "exact_prompt_tokens": 14552,
+        "prompt_tokens": 14552,
+        "configured_max_tokens": 2048,
+        "safety_margin_tokens": 128,
+        "available_tokens": 1704,
+        "effective_max_tokens": 1704,
+        "minimum_output_tokens": 256,
+        "sufficient": True,
+    }
+    assert runtime.server.payload["max_tokens"] == 1704
+
+
+def test_tool_turn_keeps_configured_output_when_request_fits() -> None:
+    runtime = runtime_with([chunk({"content": "done"}), chunk({}, finish="stop")])
+    runtime.config["context"] = {"max_context_tokens": 16384}
+    runtime.config["generation"]["max_tokens"] = 2048
+    runtime.tokenizer = FixedTokenTokenizer(1000)
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+
+    list(runtime.stream_tool_turn(session, []))
+
+    assert runtime.server.payload["max_tokens"] == 2048
+
+
+def test_tool_turn_below_minimum_is_not_sent() -> None:
+    runtime = runtime_with([])
+    runtime.config["context"] = {"max_context_tokens": 4096}
+    runtime.config["generation"]["max_tokens"] = 2048
+    runtime.tokenizer = FixedTokenTokenizer(3800)
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+    streamed = runtime.stream_tool_turn(
+        session,
+        [],
+        context_safety_margin_tokens=128,
+        minimum_output_tokens=256,
+    )
+
+    started = next(streamed)
+    assert started.metadata["available_tokens"] == 168
+    assert started.metadata["sufficient"] is False
+    with pytest.raises(ToolTurnContextCapacityError) as caught:
+        next(streamed)
+
+    assert caught.value.diagnostics == started.metadata
+    assert runtime.server.payload is None
+
+
+def test_exact_prompt_count_uses_transcript_and_native_tool_schemas() -> None:
+    runtime = runtime_with([chunk({"content": "done"}), chunk({}, finish="stop")])
+    session = Session(system_prompt="system")
+    session.add_user_message("inspect")
+    schema = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+
+    streamed = list(runtime.stream_tool_turn(session, schema))
+
+    assert runtime.tokenizer.rendered_messages == runtime.server.payload["messages"]
+    assert runtime.tokenizer.rendered_tools == runtime.server.payload["tools"]
+    rendered = json.dumps(
+        {"messages": runtime.server.payload["messages"], "tools": schema},
+        sort_keys=True,
+    )
+    assert streamed[0].metadata["exact_prompt_tokens"] == len(rendered.split())
 
 
 def test_sglang_launch_command_includes_qwen_tool_parser(tmp_path: Path) -> None:

@@ -21,6 +21,8 @@ class QwenToolAgentLimits:
     max_read_lines: int = 500
     max_directory_depth: int = 4
     max_search_results: int = 100
+    context_safety_margin_tokens: int = 128
+    minimum_output_tokens: int = 256
 
     @classmethod
     def from_config(cls, data: dict[str, Any] | None) -> "QwenToolAgentLimits":

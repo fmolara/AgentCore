@@ -24,6 +24,18 @@ from agentcore_server.runtime.server_process import ServerProcess
 from agentcore_server.sessions.session import Session
 
 
+class ToolTurnContextCapacityError(RuntimeError):
+    """Raised before a native tool request that cannot reserve safe output."""
+
+    def __init__(self, diagnostics: dict[str, Any]):
+        self.diagnostics = dict(diagnostics)
+        super().__init__(
+            "Qwen tool turn has insufficient context capacity: "
+            f"available={diagnostics['available_tokens']}, "
+            f"minimum={diagnostics['minimum_output_tokens']}"
+        )
+
+
 class SGLangRuntime(Runtime):
     def __init__(
         self,
@@ -193,12 +205,34 @@ class SGLangRuntime(Runtime):
     ) -> Iterator[ToolTurnChunk]:
         if not self.ready():
             raise RuntimeError("SGLang server is not ready")
+        safety_margin_tokens = int(kwargs.pop("context_safety_margin_tokens", 128))
+        minimum_output_tokens = int(kwargs.pop("minimum_output_tokens", 256))
+        if safety_margin_tokens < 0:
+            raise ValueError("context_safety_margin_tokens must not be negative")
+        if minimum_output_tokens <= 0:
+            raise ValueError("minimum_output_tokens must be positive")
         generation = GenerationConfig.from_dict(self.config.get("generation", {})).override(**kwargs)
         messages = session.transcript()
         prompt_tokens = self.tokenize(messages, generation=generation, tools=tools)
-        yield ToolTurnChunk.started(
-            metadata={"prompt_tokens": prompt_tokens, "runtime": "sglang"}
-        )
+        context_limit = int(self.config.get("context", {}).get("max_context_tokens", 4096))
+        configured_max_tokens = generation.max_tokens
+        available_tokens = context_limit - prompt_tokens - safety_margin_tokens
+        effective_max_tokens = max(0, min(configured_max_tokens, available_tokens))
+        capacity = {
+            "runtime": "sglang",
+            "context_limit": context_limit,
+            "exact_prompt_tokens": prompt_tokens,
+            "prompt_tokens": prompt_tokens,
+            "configured_max_tokens": configured_max_tokens,
+            "safety_margin_tokens": safety_margin_tokens,
+            "available_tokens": available_tokens,
+            "effective_max_tokens": effective_max_tokens,
+            "minimum_output_tokens": minimum_output_tokens,
+            "sufficient": available_tokens >= minimum_output_tokens,
+        }
+        yield ToolTurnChunk.started(metadata=capacity)
+        if available_tokens < minimum_output_tokens:
+            raise ToolTurnContextCapacityError(capacity)
         payload = {
             "model": self.config.get("model", {}).get("name", self.config["model"]["path"]),
             "messages": messages,
@@ -207,7 +241,7 @@ class SGLangRuntime(Runtime):
             "parallel_tool_calls": True,
             "temperature": generation.temperature,
             "top_p": generation.top_p,
-            "max_tokens": generation.max_tokens,
+            "max_tokens": effective_max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
             "chat_template_kwargs": {"enable_thinking": generation.enable_thinking},

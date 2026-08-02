@@ -193,23 +193,45 @@ class QwenToolAgent:
     def _generate_turn(self, task: Task, turn_number: int) -> AssistantTurn:
         completed: AssistantTurn | None = None
         self._emit("assistant.started", "Assistant response started", task, {"turn": turn_number})
-        for chunk in self.agent.runtime.stream_tool_turn(
-            self.agent.session,
-            self.registry.schemas(),
-            **self.agent.generation_options,
-        ):
-            if chunk.chunk_type == "failed":
-                raise RuntimeError(chunk.error or "native tool turn failed")
-            if chunk.chunk_type == "text_delta" and chunk.text_delta:
-                self._emit("assistant.delta", "Assistant response delta", task, {
-                    "delta": chunk.text_delta,
-                    "turn": turn_number,
-                })
-            elif chunk.chunk_type == "tool_call_delta" and chunk.tool_call_delta is not None:
-                # Raw fragments remain runtime data; lifecycle events are emitted after assembly.
-                continue
-            elif chunk.chunk_type == "completed":
-                completed = chunk.turn
+        try:
+            for chunk in self.agent.runtime.stream_tool_turn(
+                self.agent.session,
+                self.registry.schemas(),
+                context_safety_margin_tokens=self.limits.context_safety_margin_tokens,
+                minimum_output_tokens=self.limits.minimum_output_tokens,
+                **self.agent.generation_options,
+            ):
+                if chunk.chunk_type == "failed":
+                    raise RuntimeError(chunk.error or "native tool turn failed")
+                if chunk.chunk_type == "started":
+                    capacity = chunk.metadata
+                    if "effective_max_tokens" in capacity:
+                        event_type = (
+                            "agent.context.preflight"
+                            if capacity.get("sufficient")
+                            else "agent.context.insufficient"
+                        )
+                        self._emit(event_type, "Qwen tool-turn context capacity checked", task, {
+                            **capacity,
+                            "turn": turn_number,
+                        })
+                elif chunk.chunk_type == "text_delta" and chunk.text_delta:
+                    self._emit("assistant.delta", "Assistant response delta", task, {
+                        "delta": chunk.text_delta,
+                        "turn": turn_number,
+                    })
+                elif chunk.chunk_type == "tool_call_delta" and chunk.tool_call_delta is not None:
+                    # Raw fragments remain runtime data; lifecycle events are emitted after assembly.
+                    continue
+                elif chunk.chunk_type == "completed":
+                    completed = chunk.turn
+        except RuntimeError as exc:
+            self._emit("agent.turn.failed", "Assistant tool turn failed", task, {
+                "turn": turn_number,
+                "error": str(exc) or exc.__class__.__name__,
+                "error_type": exc.__class__.__name__,
+            })
+            raise
         if completed is None:
             raise RuntimeError("native tool turn did not complete")
         self._emit("assistant.completed", "Assistant response completed", task, {

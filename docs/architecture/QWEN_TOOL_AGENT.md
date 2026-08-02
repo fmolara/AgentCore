@@ -66,8 +66,12 @@ transition. AgentCore never commits automatically.
 
 Trusted `tool_agent` configuration bounds model turns, tool calls, consecutive
 failures, individual and cumulative result bytes, read lines, directory depth,
-and search results. If runtime context is exhausted, generation fails visibly;
-this mode does not invoke planner-style context compaction.
+search results, and native-turn context capacity. Before each request, the
+runtime renders the exact transcript and native tool schemas with the configured
+tokenizer, reserves `context_safety_margin_tokens` (default 128), and clamps
+generation to the remaining context. A request is not sent when fewer than
+`minimum_output_tokens` (default 256) remain. This mode does not truncate the
+transcript or invoke planner-style context compaction.
 
 ## Local Use
 

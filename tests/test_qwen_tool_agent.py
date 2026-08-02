@@ -473,6 +473,50 @@ def test_loop_limit_stops_safely_without_action_plan_or_commit(tmp_path, monkeyp
     assert sink.events[-1].event_type == "git.diff"
 
 
+def test_context_failure_is_terminal_and_reports_exact_capacity(tmp_path) -> None:
+    class ContextFailureRuntime(ScriptedToolRuntime):
+        def stream_tool_turn(self, session, tools, **kwargs):
+            del session, tools
+            assert kwargs["context_safety_margin_tokens"] == 128
+            assert kwargs["minimum_output_tokens"] == 256
+            yield ToolTurnChunk.started(metadata={
+                "runtime": "sglang",
+                "context_limit": 4096,
+                "exact_prompt_tokens": 3800,
+                "configured_max_tokens": 2048,
+                "safety_margin_tokens": 128,
+                "available_tokens": 168,
+                "effective_max_tokens": 168,
+                "minimum_output_tokens": 256,
+                "sufficient": False,
+            })
+            raise RuntimeError(
+                "Qwen tool turn has insufficient context capacity: available=168, minimum=256"
+            )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = ContextFailureRuntime([])
+    lab = make_lab(workspace, runtime)
+    sink = ListEventSink()
+    agent = lab.create_agent(event_sink=sink)
+    task = agent.create_task(title="Tool task", description="test")
+    tool_agent = QwenToolAgent(agent, approval_gateway=ScriptedApproval([]))
+
+    result = tool_agent.run(task, "Inspect")
+
+    assert result.status == "failed"
+    assert result.final_text == ""
+    assert result.report.final is True
+    assert result.report.lifecycle_phase == "failed"
+    assert "insufficient context capacity" in (result.report.failure_reason or "")
+    event_types = [event.event_type for event in sink.events]
+    assert "agent.context.insufficient" in event_types
+    assert "agent.turn.failed" in event_types
+    assert "agent.final" not in event_types
+    assert event_types.count("task.report") == 1
+
+
 def test_local_cli_prompt_file_approves_only_pending_tool_call(tmp_path) -> None:
     from agentcore_server.local.cli import LocalExitCode, run_cli
 
