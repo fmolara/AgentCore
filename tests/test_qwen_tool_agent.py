@@ -430,6 +430,7 @@ def test_unknown_check_and_arbitrary_shell_are_not_exposed(tmp_path) -> None:
         "edit", "write_file", "run_check",
     }
     assert "shell" not in names and "bash" not in names
+    assert all(schema["function"]["strict"] is False for schema in runtime.schemas[0])
 
 
 def test_one_steering_message_reaches_next_turn(tmp_path) -> None:

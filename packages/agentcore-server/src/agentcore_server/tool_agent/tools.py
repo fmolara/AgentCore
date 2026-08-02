@@ -28,6 +28,8 @@ class ToolDefinition:
             "function": {
                 "name": self.name,
                 "description": self.description,
+                # Match SGLang's validated OpenAI Tool representation exactly.
+                "strict": False,
                 "parameters": {
                     "type": "object",
                     "properties": self.properties,

@@ -32,6 +32,7 @@ class ToolTurnContextCapacityError(RuntimeError):
         super().__init__(
             "Qwen tool turn has insufficient context capacity: "
             f"available={diagnostics['available_tokens']}, "
+            f"effective={diagnostics['effective_max_tokens']}, "
             f"minimum={diagnostics['minimum_output_tokens']}"
         )
 
@@ -232,10 +233,10 @@ class SGLangRuntime(Runtime):
             "available_tokens": available_tokens,
             "effective_max_tokens": effective_max_tokens,
             "minimum_output_tokens": minimum_output_tokens,
-            "sufficient": available_tokens >= minimum_output_tokens,
+            "sufficient": effective_max_tokens >= minimum_output_tokens,
         }
         yield ToolTurnChunk.started(metadata=capacity)
-        if available_tokens < minimum_output_tokens:
+        if effective_max_tokens < minimum_output_tokens:
             raise ToolTurnContextCapacityError(capacity)
         payload = {
             "model": self.config.get("model", {}).get("name", self.config["model"]["path"]),

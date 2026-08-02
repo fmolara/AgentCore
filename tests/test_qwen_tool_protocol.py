@@ -73,7 +73,7 @@ def runtime_with(events):
     runtime = SGLangRuntime.__new__(SGLangRuntime)
     runtime.config = {
         "model": {"path": "qwen"},
-        "generation": {"temperature": 0, "max_tokens": 128, "enable_thinking": False},
+        "generation": {"temperature": 0, "max_tokens": 512, "enable_thinking": False},
     }
     runtime.tokenizer = FakeTokenizer()
     runtime.server = FakeServer(events)
@@ -213,6 +213,24 @@ def test_tool_turn_below_minimum_is_not_sent() -> None:
         next(streamed)
 
     assert caught.value.diagnostics == started.metadata
+    assert runtime.server.payload is None
+
+
+def test_configured_output_below_minimum_is_not_sent() -> None:
+    runtime = runtime_with([])
+    runtime.config["context"] = {"max_context_tokens": 16384}
+    runtime.config["generation"]["max_tokens"] = 128
+    runtime.tokenizer = FixedTokenTokenizer(1000)
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+    streamed = runtime.stream_tool_turn(session, [], minimum_output_tokens=256)
+
+    started = next(streamed)
+    assert started.metadata["available_tokens"] == 15256
+    assert started.metadata["effective_max_tokens"] == 128
+    assert started.metadata["sufficient"] is False
+    with pytest.raises(ToolTurnContextCapacityError):
+        next(streamed)
     assert runtime.server.payload is None
 
 
