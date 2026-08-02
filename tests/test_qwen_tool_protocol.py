@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from agentcore_server.generation import ToolCallDelta
-from agentcore_server.runtime.sglang import SGLangRuntime, ToolTurnContextCapacityError
+from agentcore_server.runtime.server_process import RuntimeStreamError, ServerProcess
+from agentcore_server.runtime.sglang import (
+    SGLangIncompleteStreamError,
+    SGLangRuntime,
+    ToolTurnContextCapacityError,
+)
 from agentcore_server.sessions import Session
 
 
@@ -226,6 +231,88 @@ def test_exact_prompt_count_uses_transcript_and_native_tool_schemas() -> None:
         sort_keys=True,
     )
     assert streamed[0].metadata["exact_prompt_tokens"] == len(rendered.split())
+
+
+def test_top_level_sglang_error_is_raised_with_preserved_fields() -> None:
+    runtime = runtime_with([{
+        "error": {
+            "object": "error",
+            "message": "Requested token count exceeds the model context length",
+            "type": "BadRequestError",
+            "param": None,
+            "code": 400,
+        }
+    }])
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+
+    with pytest.raises(RuntimeStreamError) as caught:
+        list(runtime.stream_tool_turn(session, []))
+
+    assert caught.value.error_type == "BadRequestError"
+    assert caught.value.code == 400
+    assert caught.value.stream_message == "Requested token count exceeds the model context length"
+    assert len(session.transcript()) == 2
+
+
+def test_http_200_sse_error_is_not_treated_as_success(tmp_path, monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            del exc_type, exc, traceback
+
+        def __iter__(self):
+            yield b'data: {"error":{"message":"generation failed","type":"InternalServerError","code":500}}\n'
+            yield b'data: [DONE]\n'
+
+    monkeypatch.setattr(
+        "agentcore_server.runtime.server_process.urllib.request.urlopen",
+        lambda request, timeout: Response(),
+    )
+    server = ServerProcess(
+        runtime_name="sglang",
+        api_base="http://127.0.0.1:1",
+        project_root=tmp_path,
+        log_dir=tmp_path,
+        log_prefix="test",
+    )
+
+    with pytest.raises(RuntimeStreamError) as caught:
+        list(server.stream_chat_events({"stream": True}))
+
+    assert caught.value.error_type == "InternalServerError"
+    assert caught.value.code == 500
+    assert server.last_error == str(caught.value)
+
+
+def test_incomplete_native_tool_stream_fails_without_session_mutation() -> None:
+    runtime = runtime_with([chunk(usage={"prompt_tokens": 10, "completion_tokens": 0})])
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+
+    with pytest.raises(SGLangIncompleteStreamError, match="without content"):
+        list(runtime.stream_tool_turn(session, []))
+
+    assert len(session.transcript()) == 2
+
+
+def test_normal_text_stream_preserves_content_and_finish_reason() -> None:
+    runtime = runtime_with([
+        chunk({"content": "all "}),
+        chunk({"content": "done"}),
+        chunk({}, finish="stop"),
+    ])
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+
+    completed = list(runtime.stream_tool_turn(session, []))[-1].turn
+
+    assert completed is not None
+    assert completed.text == "all done"
+    assert completed.finish_reason == "stop"
+    assert session.transcript()[-1] == {"role": "assistant", "content": "all done"}
 
 
 def test_sglang_launch_command_includes_qwen_tool_parser(tmp_path: Path) -> None:

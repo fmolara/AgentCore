@@ -15,6 +15,7 @@ from agentcore_server.generation import AssistantTurn, ToolCall, ToolResult, Too
 from agentcore_server.generation.result import GenerationMetrics, GenerationResult
 from agentcore_server.generation.stream import StreamChunk
 from agentcore_server.runtime.base import Runtime
+from agentcore_server.runtime.server_process import RuntimeStreamError
 from agentcore_server.sessions import Session, SessionStore
 from agentcore_server.tool_agent import QwenToolAgent, QwenToolAgentLimits, ToolSteeringInbox
 from agentcore_server.tool_agent.tools import encode_tool_result
@@ -513,6 +514,40 @@ def test_context_failure_is_terminal_and_reports_exact_capacity(tmp_path) -> Non
     event_types = [event.event_type for event in sink.events]
     assert "agent.context.insufficient" in event_types
     assert "agent.turn.failed" in event_types
+    assert "agent.final" not in event_types
+    assert event_types.count("task.report") == 1
+
+
+def test_stream_error_is_not_treated_as_empty_final_answer(tmp_path) -> None:
+    class StreamFailureRuntime(ScriptedToolRuntime):
+        def stream_tool_turn(self, session, tools, **kwargs):
+            del session, tools, kwargs
+            raise RuntimeStreamError(
+                "sglang",
+                "Requested token count exceeds the model context length",
+                error_type="BadRequestError",
+                code=400,
+            )
+            yield  # pragma: no cover
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = StreamFailureRuntime([])
+    lab = make_lab(workspace, runtime)
+    sink = ListEventSink()
+    agent = lab.create_agent(event_sink=sink)
+    task = agent.create_task(title="Tool task", description="test")
+    tool_agent = QwenToolAgent(agent, approval_gateway=ScriptedApproval([]))
+
+    result = tool_agent.run(task, "Inspect")
+
+    assert result.status == "failed"
+    assert result.final_text == ""
+    assert result.report.final is True
+    assert "BadRequestError" in (result.report.failure_reason or "")
+    event_types = [event.event_type for event in sink.events]
+    assert "agent.turn.failed" in event_types
+    assert "assistant.completed" not in event_types
     assert "agent.final" not in event_types
     assert event_types.count("task.report") == 1
 

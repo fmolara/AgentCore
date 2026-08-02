@@ -20,7 +20,7 @@ from agentcore_server.logging.events import generation_event
 from agentcore_server.logging.writer import JsonlWriter
 from agentcore_server.runtime.base import Runtime
 from agentcore_server.runtime.health import normalized_health, query_gpu
-from agentcore_server.runtime.server_process import ServerProcess
+from agentcore_server.runtime.server_process import RuntimeStreamError, ServerProcess
 from agentcore_server.sessions.session import Session
 
 
@@ -34,6 +34,10 @@ class ToolTurnContextCapacityError(RuntimeError):
             f"available={diagnostics['available_tokens']}, "
             f"minimum={diagnostics['minimum_output_tokens']}"
         )
+
+
+class SGLangIncompleteStreamError(RuntimeError):
+    """Raised when a native tool stream has no usable terminal data."""
 
 
 class SGLangRuntime(Runtime):
@@ -254,6 +258,9 @@ class SGLangRuntime(Runtime):
         finish_reason: str | None = None
         usage: dict[str, Any] | None = None
         for event in self.server.stream_chat_events(payload):
+            stream_error = RuntimeStreamError.from_event("sglang", event)
+            if stream_error is not None:
+                raise stream_error
             if event.get("usage"):
                 usage = event["usage"]
             for choice in event.get("choices", []):
@@ -291,6 +298,12 @@ class SGLangRuntime(Runtime):
                 if choice.get("finish_reason") is not None:
                     finish_reason = choice["finish_reason"]
         end = time.perf_counter()
+
+        if not text_parts and not call_parts and finish_reason is None:
+            raise SGLangIncompleteStreamError(
+                "SGLang native tool stream ended without content, tool calls, "
+                "a finish reason, or an explicit error"
+            )
 
         calls = tuple(self._assemble_tool_call(index, item) for index, item in sorted(call_parts.items()))
         text = "".join(text_parts)

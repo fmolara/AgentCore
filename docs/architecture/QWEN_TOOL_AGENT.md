@@ -73,6 +73,12 @@ generation to the remaining context. A request is not sent when fewer than
 `minimum_output_tokens` (default 256) remain. This mode does not truncate the
 transcript or invoke planner-style context compaction.
 
+SGLang may report a generation failure as a top-level SSE `error` object even
+when the HTTP response status is 200. AgentCore preserves its type, message,
+and code as a runtime failure. A stream with no content, tool call, finish
+reason, or explicit error is rejected as incomplete rather than treated as an
+empty assistant response.
+
 ## Local Use
 
 Use a Qwen/SGLang configuration with `server.tool_call_parser: qwen3_coder`,

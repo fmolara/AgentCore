@@ -12,6 +12,49 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
+class RuntimeStreamError(RuntimeError):
+    """Normalized error delivered inside an HTTP-successful streaming response."""
+
+    def __init__(
+        self,
+        runtime_name: str,
+        message: str,
+        *,
+        error_type: str | None = None,
+        code: int | str | None = None,
+    ) -> None:
+        self.runtime_name = runtime_name
+        self.error_type = error_type
+        self.code = code
+        self.stream_message = message
+        details = ", ".join(
+            item for item in (
+                None if error_type is None else f"type={error_type}",
+                None if code is None else f"code={code}",
+            )
+            if item is not None
+        )
+        suffix = "" if not details else f" ({details})"
+        super().__init__(f"{runtime_name} stream error{suffix}: {message}")
+
+    @classmethod
+    def from_event(cls, runtime_name: str, event: dict[str, Any]) -> "RuntimeStreamError | None":
+        if "error" not in event:
+            return None
+        error = event["error"]
+        if isinstance(error, dict):
+            message = str(error.get("message") or json.dumps(error, sort_keys=True))
+            error_type = error.get("type")
+            code = error.get("code")
+            return cls(
+                runtime_name,
+                message,
+                error_type=None if error_type is None else str(error_type),
+                code=code if isinstance(code, (int, str)) and not isinstance(code, bool) else None,
+            )
+        return cls(runtime_name, str(error))
+
+
 class ServerProcess:
     def __init__(
         self,
@@ -138,7 +181,12 @@ class ServerProcess:
                     data = line[6:]
                     if data == "[DONE]":
                         break
-                    yield json.loads(data)
+                    event = json.loads(data)
+                    stream_error = RuntimeStreamError.from_event(self.runtime_name, event)
+                    if stream_error is not None:
+                        self.last_error = str(stream_error)
+                        raise stream_error
+                    yield event
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")
             self.last_error = f"HTTP {exc.code}: {body[:1000]}"
