@@ -64,14 +64,15 @@ class SGLangRuntime(Runtime):
         )
 
     def load(self) -> None:
+        if self.tokenizer is None:
+            model_cfg = self.config["model"]
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_cfg["path"],
+                trust_remote_code=bool(model_cfg.get("trust_remote_code", True)),
+            )
+
         if self.ready():
             return
-
-        model_cfg = self.config["model"]
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_cfg["path"],
-            trust_remote_code=bool(model_cfg.get("trust_remote_code", True)),
-        )
 
         server_cfg = self.config.get("server", {})
         self.server.start(

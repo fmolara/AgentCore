@@ -346,3 +346,28 @@ def test_sglang_launch_command_includes_qwen_tool_parser(tmp_path: Path) -> None
 
     assert command[command.index("--tool-call-parser") + 1] == "qwen3_coder"
     assert command[command.index("--reasoning-parser") + 1] == "qwen3"
+
+
+def test_load_initializes_tokenizer_for_external_ready_server(tmp_path, monkeypatch) -> None:
+    tokenizer = object()
+    runtime = SGLangRuntime(
+        {
+            "model": {"path": "qwen", "trust_remote_code": True},
+            "server": {"host": "127.0.0.1", "port": 31002},
+        },
+        project_root=tmp_path,
+    )
+    monkeypatch.setattr(runtime.server, "ready", lambda: True)
+    monkeypatch.setattr(
+        "agentcore_server.runtime.sglang.AutoTokenizer.from_pretrained",
+        lambda path, trust_remote_code: tokenizer,
+    )
+    monkeypatch.setattr(
+        runtime.server,
+        "start",
+        lambda *args, **kwargs: pytest.fail("external ready server must not be started"),
+    )
+
+    runtime.load()
+
+    assert runtime.tokenizer is tokenizer
