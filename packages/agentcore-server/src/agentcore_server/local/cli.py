@@ -64,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proposal-only", action="store_true", help="Propose a plan without execution")
     parser.add_argument("--approve", action="store_true", help="Explicitly approve non-interactive execution")
     parser.add_argument("--trace-file", help="Write ordered public events as JSONL")
+    parser.add_argument(
+        "--approval-preview-dir",
+        help="Retain complete Qwen tool approval previews in this local directory",
+    )
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--no-warmup", action="store_true", help="Skip runtime warmup")
@@ -110,6 +114,8 @@ def run_cli(
                 workspace=args.workspace,
                 system_prompt=args.system_prompt,
                 event_sink=sink,
+                approval_presenter=renderer.show_tool_approval,
+                preview_directory=args.approval_preview_dir,
             )
         else:
             app = LocalAgentCoreApp(
@@ -183,6 +189,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise CliUsageError("--proposal-only and --approve require --prompt or --prompt-file")
     if args.agent == "qwen-tools" and (args.proposal_only or args.approve):
         raise CliUsageError("--agent qwen-tools cannot be combined with --proposal-only or --approve")
+    if args.approval_preview_dir and args.agent != "qwen-tools":
+        raise CliUsageError("--approval-preview-dir requires --agent qwen-tools")
     workspace = Path(args.workspace).expanduser()
     if not workspace.exists():
         raise CliUsageError(f"workspace does not exist: {workspace}")
@@ -344,7 +352,7 @@ def _run_qwen_tools_interactive(
     task = app.create_task(instruction)
     handle = app.run_async(task, instruction)
     renderer.info(
-        "Commands: /status /diff /report /approve /reject /abort /quit /help. "
+        "Commands: /status /diff /report /preview /approve /reject /abort /quit /help. "
         "Plain text queues one steering message."
     )
     while True:
@@ -370,7 +378,7 @@ def _run_qwen_tools_interactive(
         name, _, argument = command.partition(" ")
         if name == "/help":
             renderer.info(
-                "/status /diff /report /approve /reject /abort /quit /help; "
+                "/status /diff /report /preview /approve /reject /abort /quit /help; "
                 "plain text queues steering"
             )
         elif name == "/status":
@@ -379,6 +387,12 @@ def _run_qwen_tools_interactive(
             renderer.show_diff(app.diff())
         elif name == "/report":
             renderer.show_report(app.report(task))
+        elif name == "/preview":
+            pending = app.approval_gateway.wait_for_pending(timeout=1.0)
+            if pending is None:
+                renderer.error("no tool approval is pending")
+            else:
+                renderer.show_tool_approval(pending)
         elif name in {"/approve", "/reject"}:
             pending = app.approval_gateway.wait_for_pending(timeout=1.0)
             if pending is None:
@@ -389,7 +403,7 @@ def _run_qwen_tools_interactive(
                     app.approve_pending()
                     renderer.info(f"Approved tool call {pending.call.id} only.")
                 else:
-                    app.reject_pending()
+                    app.reject_pending(argument.strip() or "rejected by local operator")
                     renderer.info(f"Rejected tool call {pending.call.id} only.")
             except ValueError as exc:
                 renderer.error(str(exc))

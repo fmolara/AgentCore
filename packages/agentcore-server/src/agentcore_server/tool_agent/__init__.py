@@ -1,8 +1,10 @@
 from agentcore_server.tool_agent.models import (
     QwenToolAgentLimits,
     QwenToolRunResult,
+    ToolApprovalDecision,
     ToolApprovalGateway,
     ToolApprovalRequest,
+    ToolEffectPreview,
     ToolSteeringInbox,
 )
 from agentcore_server.tool_agent.qwen import QWEN_TOOL_AGENT_SYSTEM_PROMPT, QwenToolAgent
@@ -14,8 +16,10 @@ __all__ = [
     "QwenToolAgentLimits",
     "QwenToolRegistry",
     "QwenToolRunResult",
+    "ToolApprovalDecision",
     "ToolApprovalGateway",
     "ToolApprovalRequest",
+    "ToolEffectPreview",
     "ToolSafetyViolation",
     "ToolSteeringInbox",
 ]

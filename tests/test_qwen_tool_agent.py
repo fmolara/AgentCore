@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import subprocess
+from io import StringIO
+import sys
 from typing import Any, Iterator
 from time import monotonic, sleep
 
@@ -17,7 +19,12 @@ from agentcore_server.generation.stream import StreamChunk
 from agentcore_server.runtime.base import Runtime
 from agentcore_server.runtime.server_process import RuntimeStreamError
 from agentcore_server.sessions import Session, SessionStore
-from agentcore_server.tool_agent import QwenToolAgent, QwenToolAgentLimits, ToolSteeringInbox
+from agentcore_server.tool_agent import (
+    QwenToolAgent,
+    QwenToolAgentLimits,
+    ToolApprovalDecision,
+    ToolSteeringInbox,
+)
 from agentcore_server.tool_agent.tools import encode_tool_result
 
 
@@ -111,9 +118,11 @@ class ScriptedApproval:
         self.decisions = deque(decisions)
         self.requests = []
 
-    def request(self, request) -> bool:
+    def request(self, request) -> ToolApprovalDecision:
         self.requests.append(request)
-        return self.decisions.popleft()
+        return ToolApprovalDecision(
+            self.decisions.popleft(), request.call.id, request.preview.digest
+        )
 
 
 def make_lab(workspace: Path, runtime: ScriptedToolRuntime, checks=None) -> AgentLab:
@@ -287,6 +296,11 @@ def test_exact_edit_requires_one_approval_and_mutates_once(tmp_path) -> None:
     assert (workspace / "main.c").read_text() == "int main(void) { return 1; }\n"
     assert [request.call.id for request in approval.requests] == ["edit_1"]
     assert result.report.final is True
+    preview = approval.requests[0].preview
+    assert preview.match_count == 1
+    assert "-int main(void) { return 0; }" in preview.content
+    assert "+int main(void) { return 1; }" in preview.content
+    assert preview.within_limits is True
 
 
 def test_rejected_edit_returns_result_without_mutation(tmp_path) -> None:
@@ -322,6 +336,142 @@ def test_write_file_requires_its_own_approval(tmp_path) -> None:
     assert result.status == "completed"
     assert (workspace / "new.txt").read_text() == "created\n"
     assert [request.call.id for request in approval.requests] == ["write_1"]
+    assert approval.requests[0].preview.source_exists is False
+    assert "+created" in approval.requests[0].preview.content
+
+
+def test_rejected_preview_is_complete_while_event_summary_is_bounded(tmp_path) -> None:
+    replacement = "line\n" * 1000
+    turns = [
+        turn(call("edit_1", 0, "edit", {"path": "main.c", "old": "old\n", "new": replacement})),
+        turn(text="Rejected safely."),
+    ]
+    workspace, _, _, tool_agent, task, approval, sink = prepare(
+        tmp_path, turns, decisions=[False]
+    )
+    (workspace / "main.c").write_text("old\n", encoding="utf-8")
+
+    tool_agent.run(task, "Edit")
+
+    assert approval.requests[0].preview.content.count("+line\n") == 1000
+    event = next(item for item in sink.events if item.event_type == "tool.approval.required")
+    assert "content" not in event.payload["preview"]
+    assert event.payload["preview"]["complete_content_available"] is True
+
+
+def test_stale_approved_preview_is_rejected_without_mutation(tmp_path) -> None:
+    turns = [
+        turn(call("edit_1", 0, "edit", {"path": "main.c", "old": "old", "new": "new"})),
+        turn(text="The stale edit was not applied."),
+    ]
+    workspace, runtime, agent, _, task, _, sink = prepare(tmp_path, turns)
+    path = workspace / "main.c"
+    path.write_text("old\n", encoding="utf-8")
+
+    class StaleApproval:
+        def request(self, request):
+            path.write_text("external\n", encoding="utf-8")
+            return ToolApprovalDecision(
+                True, request.call.id, request.preview.digest
+            )
+
+    result = QwenToolAgent(agent, approval_gateway=StaleApproval()).run(task, "Edit")
+
+    assert result.status == "completed"
+    assert path.read_text(encoding="utf-8") == "external\n"
+    returned = json.loads(runtime.requests[1][-1]["content"])
+    assert "preview is stale" in returned["error"]
+    assert "tool.failed" in [event.event_type for event in sink.events]
+
+
+def test_approval_must_match_call_and_preview_digest(tmp_path) -> None:
+    turns = [turn(call("edit_1", 0, "edit", {"path": "main.c", "old": "a", "new": "b"}))]
+    workspace, _, agent, _, task, _, _ = prepare(tmp_path, turns)
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    class WrongDigestApproval:
+        def request(self, request):
+            return ToolApprovalDecision(True, request.call.id, "wrong")
+
+    result = QwenToolAgent(agent, approval_gateway=WrongDigestApproval()).run(task, "Edit")
+
+    assert result.status == "failed"
+    assert (workspace / "main.c").read_text(encoding="utf-8") == "a\n"
+    assert "preview digest" in (result.error or "")
+
+
+def test_zero_and_ambiguous_edits_fail_before_approval(tmp_path) -> None:
+    turns = [
+        turn(call("zero", 0, "edit", {"path": "main.c", "old": "missing", "new": "x"})),
+        turn(call("many", 0, "edit", {"path": "main.c", "old": "a", "new": "x"})),
+        turn(text="Both exact edits failed safely."),
+    ]
+    workspace, runtime, _, tool_agent, task, approval, _ = prepare(tmp_path, turns)
+    (workspace / "main.c").write_text("a a\n", encoding="utf-8")
+
+    tool_agent.run(task, "Edit")
+
+    assert approval.requests == []
+    assert "not found" in json.loads(runtime.requests[1][-1]["content"])["error"]
+    assert "ambiguous" in json.loads(runtime.requests[2][-1]["content"])["error"]
+    assert (workspace / "main.c").read_text(encoding="utf-8") == "a a\n"
+
+
+def test_large_edit_is_rejected_without_truncation_and_qwen_can_split_it(tmp_path) -> None:
+    limits = QwenToolAgentLimits(max_edit_new_bytes=16)
+    large = "x" * 17
+    turns = [
+        turn(call("large", 0, "edit", {"path": "main.c", "old": "a", "new": large})),
+        turn(call("small", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(text="Applied a smaller exact edit."),
+    ]
+    workspace, runtime, _, tool_agent, task, approval, _ = prepare(
+        tmp_path, turns, decisions=[True], limits=limits
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit")
+
+    assert result.status == "completed"
+    assert "exceeds 16 bytes" in json.loads(runtime.requests[1][-1]["content"])["error"]
+    assert [request.call.id for request in approval.requests] == ["small"]
+    assert (workspace / "main.c").read_text(encoding="utf-8") == "b\n"
+
+
+def test_three_operator_rejections_are_recoverable_within_limits(tmp_path) -> None:
+    turns = [
+        turn(call(f"edit_{index}", 0, "edit", {"path": "main.c", "old": "a", "new": str(index)}))
+        for index in range(3)
+    ] + [turn(text="Stopped after the operator decisions.")]
+    workspace, _, _, tool_agent, task, approval, _ = prepare(
+        tmp_path, turns, decisions=[False, False, False]
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Try alternatives")
+
+    assert result.status == "completed"
+    assert len(approval.requests) == 3
+    assert (workspace / "main.c").read_text(encoding="utf-8") == "a\n"
+
+
+def test_rejection_limit_stops_safely(tmp_path) -> None:
+    limits = QwenToolAgentLimits(max_rejected_side_effecting_calls=3)
+    turns = [
+        turn(call(f"edit_{index}", 0, "edit", {"path": "main.c", "old": "a", "new": str(index)}))
+        for index in range(3)
+    ]
+    workspace, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path, turns, decisions=[False, False, False], limits=limits
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Try alternatives")
+
+    assert result.status == "failed"
+    assert "max_rejected_side_effecting_calls=3" in (result.error or "")
+    assert (workspace / "main.c").read_text(encoding="utf-8") == "a\n"
+    assert "agent.loop.limit_reached" in [event.event_type for event in sink.events]
 
 
 @pytest.mark.parametrize("content,error", [
@@ -369,9 +519,8 @@ def test_cancellation_while_waiting_for_approval_prevents_mutation(tmp_path) -> 
 
     class CancellingApproval:
         def request(self, request):
-            del request
             agent.cancel_task(task, "cancelled during approval", executing=True)
-            return True
+            return ToolApprovalDecision(True, request.call.id, request.preview.digest)
 
     tool_agent = QwenToolAgent(agent, approval_gateway=CancellingApproval())
     result = tool_agent.run(task, "Edit")
@@ -410,6 +559,92 @@ def test_failed_check_returns_to_qwen_then_corrective_edit_succeeds(tmp_path) ->
     last_check = json.loads(runtime.requests[3][-1]["content"])["check"]
     assert last_check["returncode"] == 0
     assert len(approval.requests) == 3
+    check_preview = approval.requests[0].preview
+    assert check_preview.effect_type == "trusted_symbolic_check"
+    assert check_preview.metadata["argv"][0] == "python3"
+    assert check_preview.metadata["cwd"] == str(workspace)
+    assert check_preview.metadata["shell"] is False
+
+
+def test_explicit_checks_and_git_diff_are_required_before_completion(tmp_path) -> None:
+    checks = {
+        "build": {"argv": [sys.executable, "-c", "print('build ok')"]},
+        "test": {"argv": [sys.executable, "-c", "print('test ok')"]},
+    }
+    turns = [
+        turn(text="The edit is done."),
+        turn(call("build", 0, "run_check", {"check": "build"})),
+        turn(call("test", 0, "run_check", {"check": "test"})),
+        turn(call("diff", 0, "git_diff", {})),
+        turn(text="Build and tests passed; I inspected the final diff."),
+    ]
+    workspace, runtime, _, tool_agent, task, approval, sink = prepare(
+        tmp_path, turns, decisions=[True, True], checks=checks
+    )
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    instruction = (
+        "Run the configured build check.\n"
+        "Execute the configured test check.\n"
+        "Inspect the final Git diff."
+    )
+
+    result = tool_agent.run(task, instruction)
+
+    assert result.status == "completed"
+    assert result.turns == 5
+    assert len(approval.requests) == 2
+    assert runtime.requests[1][-1]["role"] == "user"
+    assert "Required task work remains" in runtime.requests[1][-1]["content"]
+    types = [event.event_type for event in sink.events]
+    assert types.count("agent.completion.incomplete") == 1
+    assert types.count("agent.final") == 1
+
+
+def test_final_response_before_explicit_checks_fails_at_turn_limit(tmp_path) -> None:
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    limits = QwenToolAgentLimits(max_model_turns=1)
+    _, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path,
+        [turn(text="Done without checks.")],
+        checks=checks,
+        limits=limits,
+    )
+
+    result = tool_agent.run(task, "Run the configured test check.")
+
+    assert result.status == "failed"
+    assert "max_model_turns=1" in (result.error or "")
+    types = [event.event_type for event in sink.events]
+    assert "agent.completion.incomplete" in types
+    assert "agent.final" not in types
+
+
+def test_check_and_diff_must_follow_latest_mutation(tmp_path) -> None:
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    turns = [
+        turn(call("check_1", 0, "run_check", {"check": "test"})),
+        turn(call("diff_1", 0, "git_diff", {})),
+        turn(call("edit", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(text="Done."),
+        turn(call("check_2", 0, "run_check", {"check": "test"})),
+        turn(call("diff_2", 0, "git_diff", {})),
+        turn(text="Verified after the edit."),
+    ]
+    workspace, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path, turns, decisions=[True, True, True], checks=checks
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+
+    result = tool_agent.run(
+        task,
+        "Run the configured test check and inspect the Git diff.",
+    )
+
+    assert result.status == "completed"
+    assert [event.event_type for event in sink.events].count(
+        "agent.completion.incomplete"
+    ) == 1
 
 
 def test_unknown_check_and_arbitrary_shell_are_not_exposed(tmp_path) -> None:
@@ -566,6 +801,9 @@ def test_local_cli_prompt_file_approves_only_pending_tool_call(tmp_path) -> None
         turn(text="Changed the file."),
     ])
     lab = make_lab(workspace, runtime)
+    output = StringIO()
+    errors = StringIO()
+    preview_dir = tmp_path / "previews"
 
     class ScriptedTerminal:
         def __init__(self):
@@ -587,16 +825,25 @@ def test_local_cli_prompt_file_approves_only_pending_tool_call(tmp_path) -> None
             "--workspace", str(workspace),
             "--agent", "qwen-tools",
             "--prompt-file", str(prompt),
+            "--approval-preview-dir", str(preview_dir),
             "--no-warmup",
             "--no-color",
         ],
         stdin=ScriptedTerminal(),
+        stdout=output,
+        stderr=errors,
         lab_factory=lambda path: lab,
     )
 
     assert code == LocalExitCode.SUCCESS
     assert (workspace / "main.c").read_text() == "b\n"
     assert runtime.requests[0][1]["content"] == prompt.read_text(encoding="utf-8")
+    rendered = output.getvalue()
+    assert "--- BEGIN COMPLETE PREVIEW ---" in rendered
+    assert "-a" in rendered and "+b" in rendered
+    artifacts = list(preview_dir.glob("preview-*.diff"))
+    assert len(artifacts) == 1
+    assert artifacts[0].read_text(encoding="utf-8") in rendered
 
 
 def test_local_cli_rejects_planner_options_with_qwen_agent(tmp_path) -> None:

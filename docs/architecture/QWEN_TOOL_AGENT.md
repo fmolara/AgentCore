@@ -55,6 +55,22 @@ tool-call ID. Approval is never inherited by a later call. Rejection performs
 no side effect and becomes a structured tool result so Qwen can reconsider.
 There is no arbitrary shell, network, package-install, commit, or push tool.
 
+Before approval, AgentCore computes the concrete effect against the current
+workspace. Exact edits must have one match and display a complete prospective
+unified diff. Whole-file writes display their complete prospective diff, and
+checks display the trusted argv, cwd, timeout, and `shell=False`. Each preview
+has a stable digest bound to the tool-call ID. AgentCore recomputes the preview
+immediately before execution and rejects it as stale if the workspace changed.
+Normal events remain bounded, while local mode renders the complete preview and
+can retain it in an isolated directory selected with
+`--approval-preview-dir`. `/preview` displays the pending artifact again.
+
+Concrete edit limits bound old text, new text, prospective diff bytes, changed
+lines, and whole-file write bytes. Oversized edits execute nothing and tell
+Qwen to split the operation into smaller exact edits. Operator rejections are
+normal tool results. Separate total and consecutive rejection limits allow
+bounded recovery without treating two rejected attempts as terminal.
+
 ## Lifecycle And Limits
 
 A Task starts with the loop and completes only after Qwen returns a final
@@ -63,6 +79,12 @@ or nonzero check are returned to Qwen and do not end the Task. Runtime,
 workspace-safety, cancellation, and configured loop-limit failures are
 terminal. One authoritative TaskReport is emitted after the terminal Task
 transition. AgentCore never commits automatically.
+
+For explicitly named configured checks and Git-diff requirements, a plain final
+answer is not accepted until the checks have passed and `git_diff` has been
+inspected after the latest mutation. AgentCore returns a concise completion
+requirement to the persistent transcript so Qwen can continue; it does not
+synthesize a success response.
 
 Trusted `tool_agent` configuration bounds model turns, tool calls, consecutive
 failures, individual and cumulative result bytes, read lines, directory depth,
@@ -94,9 +116,10 @@ agentcore-local \
   --no-color
 ```
 
-The commands `/status`, `/diff`, `/report`, `/abort`, `/quit`, and `/help` are
-available. `/approve` and `/reject` decide only the pending side-effecting tool
-call. One plain-text steering message can be queued between tool turns.
+The commands `/status`, `/diff`, `/report`, `/preview`, `/abort`, `/quit`, and
+`/help` are available. `/approve` and `/reject [reason]` decide only the pending
+side-effecting tool call and its exact preview digest. One plain-text steering
+message can be queued between tool turns.
 
 `--agent qwen-tools` is mutually exclusive with `--planner`,
 `--proposal-only`, and `--approve`; blanket approval is intentionally absent.

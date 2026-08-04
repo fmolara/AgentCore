@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import re
 from typing import Any
 
 from agentcore_server.agents import Agent
@@ -23,7 +24,7 @@ from agentcore_server.tool_agent.tools import (
 
 
 QWEN_TOOL_AGENT_SYSTEM_PROMPT = """You are QwenToolAgent, a careful coding agent operating on a real workspace.
-Use the native tools to inspect files before editing. Do not stop at an up-front ActionPlan: the host requests operator approval for each concrete side-effecting tool call. Prefer edit for exact localized changes to existing files; use write_file mainly for new files. Never rewrite a complete project when a local edit is sufficient. Inspect tool failures and recover instead of claiming success. Run configured checks when the task requires verification, inspect git_diff before finishing, and never claim a tool succeeded unless its tool result says so. Do not create commits. When the work is complete, return a concise final summary. Do not expose hidden reasoning."""
+Use the native tools to inspect files before editing. Do not stop at an up-front ActionPlan: the host requests operator approval for each concrete side-effecting tool call. Prefer edit for exact localized changes to existing files; use write_file mainly for new files. Never rewrite a complete project when a local edit is sufficient. If a large edit is rejected, split it into smaller localized exact edits. Inspect tool failures and recover instead of claiming success. Do not finish merely because edits were applied. When the task explicitly requests configured build or test checks, run them and repair any failures before finishing. Inspect git_diff after the final changes. Never claim a tool succeeded unless its tool result says so. Do not create commits. Return a concise final summary only after required checks and diff inspection are complete. Do not expose hidden reasoning."""
 
 
 class QwenToolAgent:
@@ -47,6 +48,11 @@ class QwenToolAgent:
             max_read_lines=self.limits.max_read_lines,
             max_directory_depth=self.limits.max_directory_depth,
             max_search_results=self.limits.max_search_results,
+            max_edit_old_bytes=self.limits.max_edit_old_bytes,
+            max_edit_new_bytes=self.limits.max_edit_new_bytes,
+            max_write_file_bytes=self.limits.max_write_file_bytes,
+            max_preview_bytes=self.limits.max_preview_bytes,
+            max_changed_lines=self.limits.max_changed_lines,
         )
 
     def run(self, task: Task, instruction: str) -> QwenToolRunResult:
@@ -65,6 +71,12 @@ class QwenToolAgent:
         total_calls = 0
         total_result_bytes = 0
         consecutive_failures = 0
+        total_rejections = 0
+        consecutive_rejections = 0
+        mutation_revision = 0
+        successful_checks: dict[str, int] = {}
+        git_diff_revision = -1
+        required_checks, require_git_diff = self._completion_requirements(instruction)
         final_text = ""
         error: str | None = None
 
@@ -85,6 +97,27 @@ class QwenToolAgent:
                 if not turn.tool_calls:
                     if not turn.text.strip():
                         raise RuntimeError("Qwen returned neither tool calls nor a final response")
+                    missing = self._missing_completion_requirements(
+                        required_checks=required_checks,
+                        require_git_diff=require_git_diff,
+                        mutation_revision=mutation_revision,
+                        successful_checks=successful_checks,
+                        git_diff_revision=git_diff_revision,
+                    )
+                    if missing:
+                        message = (
+                            "Required task work remains before the final response: "
+                            + "; ".join(missing)
+                            + ". Use the native tools, then provide the final response."
+                        )
+                        self.agent.session.add_user_message(message)
+                        self._emit(
+                            "agent.completion.incomplete",
+                            "Qwen attempted to finish before required work completed",
+                            task,
+                            {"turn": turns, "missing": missing},
+                        )
+                        continue
                     final_text = turn.text
                     task.complete()
                     self._emit("agent.final", "Qwen tool agent completed", task, {
@@ -122,6 +155,34 @@ class QwenToolAgent:
                     else:
                         assert item is not None
                         success, data = self._execute_one(task, item)
+                        if data.get("rejected"):
+                            total_rejections += 1
+                            consecutive_rejections += 1
+                            consecutive_failures = 0
+                            if (
+                                total_rejections
+                                >= self.limits.max_rejected_side_effecting_calls
+                            ):
+                                raise LoopLimitError(
+                                    "max_rejected_side_effecting_calls="
+                                    f"{self.limits.max_rejected_side_effecting_calls} reached"
+                                )
+                            if (
+                                consecutive_rejections
+                                >= self.limits.max_consecutive_rejected_side_effecting_calls
+                            ):
+                                raise LoopLimitError(
+                                    "max_consecutive_rejected_side_effecting_calls="
+                                    f"{self.limits.max_consecutive_rejected_side_effecting_calls} reached"
+                                )
+                        else:
+                            consecutive_rejections = 0
+                        if success and item.definition.name in {"edit", "write_file"}:
+                            mutation_revision += 1
+                        elif success and item.definition.name == "run_check":
+                            successful_checks[item.arguments["check"]] = mutation_revision
+                        elif success and item.definition.name == "git_diff":
+                            git_diff_revision = mutation_revision
                     result, result_bytes = self._result(
                         call,
                         success,
@@ -136,7 +197,7 @@ class QwenToolAgent:
                     results.append(result)
                     if success:
                         consecutive_failures = 0
-                    else:
+                    elif not data.get("rejected"):
                         consecutive_failures += 1
                         if consecutive_failures >= self.limits.max_consecutive_tool_failures:
                             raise LoopLimitError(
@@ -284,39 +345,84 @@ class QwenToolAgent:
         validated: ValidatedToolCall,
     ) -> tuple[bool, dict[str, Any]]:
         call = validated.call
+        preview = None
         if validated.definition.side_effecting:
+            try:
+                preview = self.registry.preview(validated)
+            except ToolSafetyViolation:
+                raise
+            except (OSError, RuntimeError, ValueError) as exc:
+                data = {
+                    "success": False,
+                    "error": str(exc),
+                    "kind": "tool_preview",
+                    "tool_call_id": call.id,
+                }
+                self._emit("tool.preview.failed", "Tool effect preview failed", task, {
+                    "tool_call_id": call.id,
+                    "tool": call.function_name,
+                    "target": validated.target,
+                    "error": str(exc),
+                })
+                return False, data
             request = ToolApprovalRequest(
                 call=call,
                 target=validated.target,
-                arguments=self.registry.bounded_arguments(validated),
+                arguments=dict(validated.arguments),
                 expected_side_effect=self.registry.expected_side_effect(validated),
+                preview=preview,
             )
-            self._emit("tool.approval.required", "Explicit tool approval required", task, request.as_dict())
-            if not self.approval_gateway.request(request):
+            self._emit("tool.preview.created", "Complete tool effect preview created", task, {
+                "tool_call_id": call.id,
+                "tool": call.function_name,
+                "target": validated.target,
+                "preview": preview.summary_dict(),
+            })
+            event_request = request.as_dict()
+            event_request["arguments"] = self.registry.bounded_arguments(validated)
+            self._emit(
+                "tool.approval.required",
+                "Explicit tool approval required",
+                task,
+                event_request,
+            )
+            decision = self.approval_gateway.request(request)
+            if decision.tool_call_id != call.id or decision.preview_digest != preview.digest:
+                raise ToolSafetyViolation(
+                    "approval decision does not match the tool call and preview digest"
+                )
+            if not decision.approved:
                 self._emit("tool.rejected", "Tool call rejected", task, {
                     "tool_call_id": call.id,
                     "tool": call.function_name,
                     "target": validated.target,
+                    "preview_id": preview.preview_id,
+                    "preview_digest": preview.digest,
+                    "reason": decision.reason or "rejected by operator",
                 })
                 return False, {
                     "success": False,
                     "rejected": True,
-                    "error": "rejected by operator",
+                    "error": decision.reason or "rejected by operator",
                     "tool_call_id": call.id,
                 }
             self._emit("tool.approved", "Tool call approved", task, {
                 "tool_call_id": call.id,
                 "tool": call.function_name,
                 "target": validated.target,
+                "preview_id": preview.preview_id,
+                "preview_digest": preview.digest,
             })
             self._cancel_if_requested(task)
         self._emit("tool.started", "Tool execution started", task, {
             "tool_call_id": call.id,
             "tool": call.function_name,
             "target": validated.target,
+            "preview_id": None if preview is None else preview.preview_id,
+            "preview_digest": None if preview is None else preview.digest,
         })
         try:
-            success, data = self.registry.execute(validated)
+            success, data = self.registry.execute(validated, preview=preview)
         except ToolSafetyViolation:
             raise
         except (OSError, RuntimeError, ValueError) as exc:
@@ -328,9 +434,48 @@ class QwenToolAgent:
             "tool": call.function_name,
             "target": validated.target,
             "success": success,
+            "preview_id": None if preview is None else preview.preview_id,
+            "preview_digest": None if preview is None else preview.digest,
             "result": self._bounded_event_data(data),
         })
         return success, data
+
+    def _completion_requirements(self, instruction: str) -> tuple[tuple[str, ...], bool]:
+        required: list[str] = []
+        for name in self.agent.workspace.checks.names():
+            escaped = re.escape(name)
+            pattern = re.compile(
+                rf"\b(?:run|execute)\b[^\n]{{0,80}}\b(?:the\s+)?(?:configured\s+)?{escaped}\s+check\b",
+                re.IGNORECASE,
+            )
+            if pattern.search(instruction):
+                required.append(name)
+        require_git_diff = bool(
+            re.search(
+                r"\b(?:inspect|show|produce)\b[^\n]{0,80}\bgit\s+diff\b",
+                instruction,
+                re.IGNORECASE,
+            )
+        )
+        return tuple(required), require_git_diff
+
+    @staticmethod
+    def _missing_completion_requirements(
+        *,
+        required_checks: tuple[str, ...],
+        require_git_diff: bool,
+        mutation_revision: int,
+        successful_checks: dict[str, int],
+        git_diff_revision: int,
+    ) -> list[str]:
+        missing = [
+            f"configured check '{name}' has not passed after the latest mutation"
+            for name in required_checks
+            if successful_checks.get(name) != mutation_revision
+        ]
+        if require_git_diff and git_diff_revision != mutation_revision:
+            missing.append("git_diff has not been inspected after the latest mutation")
+        return missing
 
     def _result(
         self,

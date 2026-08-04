@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from threading import Condition, Event, RLock, Thread
+from tempfile import TemporaryDirectory
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 from agentcore_server.agents import Agent
 from agentcore_server.api.client import AgentLab
@@ -14,49 +16,95 @@ from agentcore_server.tool_agent import (
     QwenToolAgent,
     QwenToolAgentLimits,
     QwenToolRunResult,
+    ToolApprovalDecision,
     ToolApprovalRequest,
     ToolSteeringInbox,
 )
 
 
 class InteractiveToolApprovalGateway:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        presenter: Callable[[ToolApprovalRequest], None] | None = None,
+        preview_directory: str | Path | None = None,
+    ) -> None:
         self._condition = Condition()
         self._pending: ToolApprovalRequest | None = None
-        self._decision: bool | None = None
+        self._decision: ToolApprovalDecision | None = None
         self._closed = False
+        self._presenter = presenter
+        self._temporary_directory: TemporaryDirectory[str] | None = None
+        if preview_directory is None:
+            self._temporary_directory = TemporaryDirectory(
+                prefix="agentcore-tool-previews-"
+            )
+            self.preview_directory = Path(self._temporary_directory.name)
+        else:
+            self.preview_directory = Path(preview_directory).expanduser().resolve()
+            self.preview_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.preview_directory.chmod(0o700)
 
     @property
     def pending(self) -> ToolApprovalRequest | None:
         with self._condition:
             return self._pending
 
-    def request(self, request: ToolApprovalRequest) -> bool:
+    def request(self, request: ToolApprovalRequest) -> ToolApprovalDecision:
+        artifact = self._materialize(request)
+        prepared = replace(request, preview_artifact=str(artifact))
         with self._condition:
             if self._closed:
-                return False
+                return ToolApprovalDecision(
+                    approved=False,
+                    tool_call_id=request.call.id,
+                    preview_digest=request.preview.digest,
+                    reason="approval gateway closed",
+                )
             if self._pending is not None:
                 raise RuntimeError("another tool approval is already pending")
-            self._pending = request
+            self._pending = prepared
             self._decision = None
             self._condition.notify_all()
+        if self._presenter is not None:
+            self._presenter(prepared)
+        with self._condition:
             while self._decision is None and not self._closed:
                 self._condition.wait()
-            decision = False if self._decision is None else self._decision
+            decision = self._decision or ToolApprovalDecision(
+                approved=False,
+                tool_call_id=prepared.call.id,
+                preview_digest=prepared.preview.digest,
+                reason="approval gateway closed",
+            )
             self._pending = None
             self._decision = None
             self._condition.notify_all()
             return decision
 
-    def decide(self, approved: bool, *, tool_call_id: str | None = None) -> None:
+    def decide(
+        self,
+        approved: bool,
+        *,
+        tool_call_id: str,
+        preview_digest: str,
+        reason: str | None = None,
+    ) -> None:
         with self._condition:
             if self._pending is None:
                 raise ValueError("no tool approval is pending")
-            if tool_call_id is not None and self._pending.call.id != tool_call_id:
+            if self._pending.call.id != tool_call_id:
                 raise ValueError("approval tool-call ID does not match the pending call")
+            if self._pending.preview.digest != preview_digest:
+                raise ValueError("approval preview digest does not match the pending preview")
             if self._decision is not None:
                 raise ValueError("pending tool call already has a decision")
-            self._decision = approved
+            self._decision = ToolApprovalDecision(
+                approved=approved,
+                tool_call_id=tool_call_id,
+                preview_digest=preview_digest,
+                reason=reason,
+            )
             self._condition.notify_all()
 
     def wait_for_pending(self, timeout: float | None = None) -> ToolApprovalRequest | None:
@@ -76,6 +124,16 @@ class InteractiveToolApprovalGateway:
         with self._condition:
             self._closed = True
             self._condition.notify_all()
+        if self._temporary_directory is not None:
+            self._temporary_directory.cleanup()
+            self._temporary_directory = None
+
+    def _materialize(self, request: ToolApprovalRequest) -> Path:
+        suffix = ".diff" if request.preview.metadata.get("preview_format") == "unified_diff" else ".txt"
+        path = self.preview_directory / f"{request.preview.preview_id}{suffix}"
+        path.write_text(request.preview.content, encoding="utf-8")
+        path.chmod(0o600)
+        return path
 
 
 @dataclass
@@ -106,10 +164,15 @@ class LocalQwenToolApp:
         system_prompt: str | None = None,
         event_sink: EventSink | None = None,
         approval_gateway: InteractiveToolApprovalGateway | None = None,
+        approval_presenter: Callable[[ToolApprovalRequest], None] | None = None,
+        preview_directory: str | Path | None = None,
     ) -> None:
         self.lab = lab
         self.event_sink = event_sink
-        self.approval_gateway = approval_gateway or InteractiveToolApprovalGateway()
+        self.approval_gateway = approval_gateway or InteractiveToolApprovalGateway(
+            presenter=approval_presenter,
+            preview_directory=preview_directory,
+        )
         self.steering = ToolSteeringInbox()
         self.agent: Agent = lab.create_agent(
             system_prompt=system_prompt or QWEN_TOOL_AGENT_SYSTEM_PROMPT,
@@ -181,10 +244,25 @@ class LocalQwenToolApp:
             return handle
 
     def approve_pending(self) -> None:
-        self.approval_gateway.decide(True)
+        pending = self.approval_gateway.pending
+        if pending is None:
+            raise ValueError("no tool approval is pending")
+        self.approval_gateway.decide(
+            True,
+            tool_call_id=pending.call.id,
+            preview_digest=pending.preview.digest,
+        )
 
-    def reject_pending(self) -> None:
-        self.approval_gateway.decide(False)
+    def reject_pending(self, reason: str | None = None) -> None:
+        pending = self.approval_gateway.pending
+        if pending is None:
+            raise ValueError("no tool approval is pending")
+        self.approval_gateway.decide(
+            False,
+            tool_call_id=pending.call.id,
+            preview_digest=pending.preview.digest,
+            reason=reason or "rejected by local operator",
+        )
 
     def queue_steering(self, message: str) -> bool:
         return self.steering.queue(message)
@@ -194,7 +272,12 @@ class LocalQwenToolApp:
         pending = self.approval_gateway.pending
         if pending is not None:
             try:
-                self.approval_gateway.decide(False, tool_call_id=pending.call.id)
+                self.approval_gateway.decide(
+                    False,
+                    tool_call_id=pending.call.id,
+                    preview_digest=pending.preview.digest,
+                    reason=reason,
+                )
             except ValueError:
                 pass
         return result
