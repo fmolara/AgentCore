@@ -165,6 +165,7 @@ class SGLangRuntime(Runtime):
             "stream": True,
             "chat_template_kwargs": {"enable_thinking": generation.enable_thinking},
         }
+        self._add_optional_sampling(payload, generation)
 
         start = time.perf_counter()
         first_token_at: float | None = None
@@ -252,6 +253,7 @@ class SGLangRuntime(Runtime):
             "stream_options": {"include_usage": True},
             "chat_template_kwargs": {"enable_thinking": generation.enable_thinking},
         }
+        self._add_optional_sampling(payload, generation)
 
         start = time.perf_counter()
         first_token_at: float | None = None
@@ -346,6 +348,15 @@ class SGLangRuntime(Runtime):
                 generation_event("sglang", session, result, self.health(), event_type="tool_turn")
             )
         yield ToolTurnChunk.completed(turn)
+
+    @staticmethod
+    def _add_optional_sampling(
+        payload: dict[str, Any], generation: GenerationConfig
+    ) -> None:
+        if generation.top_k is not None:
+            payload["top_k"] = generation.top_k
+        if generation.repetition_penalty is not None:
+            payload["repetition_penalty"] = generation.repetition_penalty
 
     @staticmethod
     def _assemble_tool_call(index: int, item: dict[str, Any]) -> ToolCall:

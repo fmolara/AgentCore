@@ -192,6 +192,25 @@ def test_tool_turn_keeps_configured_output_when_request_fits() -> None:
     assert runtime.server.payload["max_tokens"] == 2048
 
 
+def test_tool_turn_forwards_optional_sampling_controls() -> None:
+    runtime = runtime_with([chunk({"content": "done"}), chunk({}, finish="stop")])
+    runtime.config["generation"].update({
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "repetition_penalty": 1.05,
+    })
+    session = Session(system_prompt="system")
+    session.add_user_message("task")
+
+    list(runtime.stream_tool_turn(session, []))
+
+    assert runtime.server.payload["temperature"] == 0.7
+    assert runtime.server.payload["top_p"] == 0.8
+    assert runtime.server.payload["top_k"] == 20
+    assert runtime.server.payload["repetition_penalty"] == 1.05
+
+
 def test_tool_turn_below_minimum_is_not_sent() -> None:
     runtime = runtime_with([])
     runtime.config["context"] = {"max_context_tokens": 4096}

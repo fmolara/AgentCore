@@ -44,6 +44,8 @@ def test_generation_config_from_dict_and_override() -> None:
             "temperature": "0.2",
             "max_tokens": "32",
             "top_p": "0.9",
+            "top_k": "20",
+            "repetition_penalty": "1.05",
             "enable_thinking": True,
         }
     )
@@ -52,6 +54,8 @@ def test_generation_config_from_dict_and_override() -> None:
         temperature=0.2,
         max_tokens=32,
         top_p=0.9,
+        top_k=20,
+        repetition_penalty=1.05,
         enable_thinking=True,
     )
 
