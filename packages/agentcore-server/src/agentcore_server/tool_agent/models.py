@@ -10,7 +10,7 @@ from agentcore_server.tasks import TaskReport
 
 
 @dataclass(frozen=True)
-class QwenToolAgentLimits:
+class ToolAgentLimits:
     max_model_turns: int = 32
     max_total_tool_calls: int = 64
     max_tool_calls_per_turn: int = 8
@@ -32,21 +32,23 @@ class QwenToolAgentLimits:
     max_consecutive_rejected_side_effecting_calls: int = 5
 
     @classmethod
-    def from_config(cls, data: dict[str, Any] | None) -> "QwenToolAgentLimits":
+    def from_config(cls, data: dict[str, Any] | None) -> "ToolAgentLimits":
         if data is None:
             return cls()
         if not isinstance(data, dict):
             raise ValueError("tool_agent configuration must be a mapping")
         allowed = set(cls.__dataclass_fields__)
-        unknown = sorted(set(data) - allowed)
+        protocol_keys = {"protocol", "reasoning_effort"}
+        unknown = sorted(set(data) - allowed - protocol_keys)
         if unknown:
             raise ValueError("unknown tool_agent setting(s): " + ", ".join(unknown))
-        for name, value in data.items():
+        limit_data = {name: value for name, value in data.items() if name in allowed}
+        for name, value in limit_data.items():
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"tool_agent setting '{name}' must be a positive integer")
-        if data.get("max_single_tool_result_bytes", cls.max_single_tool_result_bytes) < 256:
+        if limit_data.get("max_single_tool_result_bytes", cls.max_single_tool_result_bytes) < 256:
             raise ValueError("max_single_tool_result_bytes must be at least 256")
-        return cls(**data)
+        return cls(**limit_data)
 
 
 @dataclass(frozen=True)
@@ -149,7 +151,7 @@ class ToolSteeringInbox:
 
 
 @dataclass(frozen=True)
-class QwenToolRunResult:
+class ToolRunResult:
     status: str
     final_text: str
     turns: int
@@ -170,3 +172,8 @@ class QwenToolRunResult:
             "error": self.error,
             "metadata": deepcopy(self.metadata),
         }
+
+
+# Backward-compatible names for existing local integrations and serialized imports.
+QwenToolAgentLimits = ToolAgentLimits
+QwenToolRunResult = ToolRunResult

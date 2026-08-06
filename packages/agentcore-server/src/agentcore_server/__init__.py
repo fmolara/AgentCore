@@ -37,7 +37,14 @@ from .tasks import (
     TaskStatus,
 )
 from .workspace import Workspace
-from .tool_agent import QwenToolAgent, QwenToolAgentLimits, QwenToolRegistry
+from .tool_agent import (
+    QwenToolAgent,
+    QwenToolAgentLimits,
+    QwenToolRegistry,
+    ToolAgentLimits,
+    ToolLoopAgent,
+    ToolRegistry,
+)
 
 __all__ = [
     "Agent",
@@ -78,4 +85,7 @@ __all__ = [
     "QwenToolAgent",
     "QwenToolAgentLimits",
     "QwenToolRegistry",
+    "ToolAgentLimits",
+    "ToolLoopAgent",
+    "ToolRegistry",
 ]

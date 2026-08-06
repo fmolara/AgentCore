@@ -22,6 +22,7 @@ from agentcore_server.runtime.base import Runtime
 from agentcore_server.runtime.health import normalized_health, query_gpu
 from agentcore_server.runtime.server_process import RuntimeStreamError, ServerProcess
 from agentcore_server.sessions.session import Session
+from agentcore_server.tool_agent.protocols import protocol_from_config
 
 
 class ToolTurnContextCapacityError(RuntimeError):
@@ -30,7 +31,7 @@ class ToolTurnContextCapacityError(RuntimeError):
     def __init__(self, diagnostics: dict[str, Any]):
         self.diagnostics = dict(diagnostics)
         super().__init__(
-            "Qwen tool turn has insufficient context capacity: "
+            "native tool turn has insufficient context capacity: "
             f"available={diagnostics['available_tokens']}, "
             f"effective={diagnostics['effective_max_tokens']}, "
             f"minimum={diagnostics['minimum_output_tokens']}"
@@ -50,25 +51,31 @@ class SGLangRuntime(Runtime):
         log_writer: JsonlWriter | None = None,
     ):
         self.config = config
+        self._runtime_name = str(config.get("runtime", "sglang"))
+        self._tool_protocol = protocol_from_config(config.get("tool_agent"))
         self.project_root = project_root
         self.log_writer = log_writer
         self.tokenizer = None
         self.api_base = self._api_base()
         self.last_warmup_wall_sec: float | None = None
         self.server = ServerProcess(
-            runtime_name="sglang",
+            runtime_name=self.runtime_name,
             api_base=self.api_base,
             project_root=project_root,
             log_dir=self._log_dir(),
-            log_prefix="sglang-server",
+            log_prefix=f"{self.runtime_name}-server",
         )
 
     def load(self) -> None:
         if self.tokenizer is None:
             model_cfg = self.config["model"]
+            tokenizer_options = {
+                "trust_remote_code": bool(model_cfg.get("trust_remote_code", True)),
+            }
+            if self.tool_protocol.name == "mistral":
+                tokenizer_options["fix_mistral_regex"] = True
             self.tokenizer = AutoTokenizer.from_pretrained(
-                model_cfg["path"],
-                trust_remote_code=bool(model_cfg.get("trust_remote_code", True)),
+                model_cfg["path"], **tokenizer_options
             )
 
         if self.ready():
@@ -78,12 +85,24 @@ class SGLangRuntime(Runtime):
         self.server.start(
             self._launch_command(),
             timeout=float(server_cfg.get("startup_timeout_sec", 180)),
-            env_updates={"CUDA_VISIBLE_DEVICES": str(self.config.get("gpu", {}).get("device", 0))},
+            env_updates=self._server_env_updates(),
             path_prefix=server_cfg.get("path_prefix"),
         )
 
     def shutdown(self) -> None:
         self.server.shutdown()
+
+    @property
+    def tool_protocol(self):
+        # Older tests and third-party fakes may construct the runtime without
+        # invoking __init__; preserve their Qwen-compatible behavior.
+        if not hasattr(self, "_tool_protocol"):
+            self._tool_protocol = protocol_from_config(self.config.get("tool_agent"))
+        return self._tool_protocol
+
+    @property
+    def runtime_name(self) -> str:
+        return getattr(self, "_runtime_name", str(self.config.get("runtime", "sglang")))
 
     def ready(self) -> bool:
         return self.server.ready()
@@ -91,7 +110,7 @@ class SGLangRuntime(Runtime):
     def health(self) -> dict[str, Any]:
         server_health = self.server.health()
         return normalized_health(
-            runtime_name="sglang",
+            runtime_name=self.runtime_name,
             backend_type="server",
             model_path=self.config.get("model", {}).get("path"),
             ready=server_health["ready"],
@@ -152,9 +171,9 @@ class SGLangRuntime(Runtime):
 
         generation = GenerationConfig.from_dict(self.config.get("generation", {})).override(**kwargs)
         session.add_user_message(prompt)
-        messages = session.transcript()
+        messages = self.tool_protocol.encode_messages(session.transcript())
         prompt_tokens = self.tokenize(messages, generation=generation)
-        yield StreamChunk.started(metadata={"prompt_tokens": prompt_tokens, "runtime": "sglang"})
+        yield StreamChunk.started(metadata={"prompt_tokens": prompt_tokens, "runtime": self.runtime_name})
 
         payload = {
             "model": self.config.get("model", {}).get("name", self.config["model"]["path"]),
@@ -163,8 +182,8 @@ class SGLangRuntime(Runtime):
             "top_p": generation.top_p,
             "max_tokens": generation.max_tokens,
             "stream": True,
-            "chat_template_kwargs": {"enable_thinking": generation.enable_thinking},
         }
+        payload.update(self.tool_protocol.request_options(generation))
         self._add_optional_sampling(payload, generation)
 
         start = time.perf_counter()
@@ -197,9 +216,9 @@ class SGLangRuntime(Runtime):
         )
 
         if self.log_writer is not None:
-            self.log_writer.write(generation_event("sglang", session, result, self.health(), event_type=event_type))
+            self.log_writer.write(generation_event(self.runtime_name, session, result, self.health(), event_type=event_type))
 
-        yield StreamChunk.completed(text=text, metrics=result.metrics, metadata={"runtime": "sglang"})
+        yield StreamChunk.completed(text=text, metrics=result.metrics, metadata={"runtime": self.runtime_name})
 
     def stream(self, session: Session, prompt: str, **kwargs: Any) -> Iterator[StreamChunk]:
         yield from self._stream(session, prompt, event_type="generation", **kwargs)
@@ -219,14 +238,14 @@ class SGLangRuntime(Runtime):
         if minimum_output_tokens <= 0:
             raise ValueError("minimum_output_tokens must be positive")
         generation = GenerationConfig.from_dict(self.config.get("generation", {})).override(**kwargs)
-        messages = session.transcript()
+        messages = self.tool_protocol.encode_messages(session.transcript())
         prompt_tokens = self.tokenize(messages, generation=generation, tools=tools)
         context_limit = int(self.config.get("context", {}).get("max_context_tokens", 4096))
         configured_max_tokens = generation.max_tokens
         available_tokens = context_limit - prompt_tokens - safety_margin_tokens
         effective_max_tokens = max(0, min(configured_max_tokens, available_tokens))
         capacity = {
-            "runtime": "sglang",
+            "runtime": self.runtime_name,
             "context_limit": context_limit,
             "exact_prompt_tokens": prompt_tokens,
             "prompt_tokens": prompt_tokens,
@@ -251,8 +270,8 @@ class SGLangRuntime(Runtime):
             "max_tokens": effective_max_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
-            "chat_template_kwargs": {"enable_thinking": generation.enable_thinking},
         }
+        payload.update(self.tool_protocol.request_options(generation))
         self._add_optional_sampling(payload, generation)
 
         start = time.perf_counter()
@@ -262,20 +281,20 @@ class SGLangRuntime(Runtime):
         finish_reason: str | None = None
         usage: dict[str, Any] | None = None
         for event in self.server.stream_chat_events(payload):
-            stream_error = RuntimeStreamError.from_event("sglang", event)
+            stream_error = RuntimeStreamError.from_event(self.runtime_name, event)
             if stream_error is not None:
                 raise stream_error
             if event.get("usage"):
                 usage = event["usage"]
             for choice in event.get("choices", []):
-                delta = choice.get("delta") or {}
-                content = delta.get("content")
+                delta = self.tool_protocol.decode_delta(choice.get("delta") or {})
+                content = delta.visible_text
                 if content:
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
                     text_parts.append(content)
                     yield ToolTurnChunk.text(content)
-                for raw_call in delta.get("tool_calls") or []:
+                for raw_call in delta.tool_calls:
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
                     index = raw_call.get("index")
@@ -305,7 +324,7 @@ class SGLangRuntime(Runtime):
 
         if not text_parts and not call_parts and finish_reason is None:
             raise SGLangIncompleteStreamError(
-                "SGLang native tool stream ended without content, tool calls, "
+                f"{self.runtime_name} native tool stream ended without content, tool calls, "
                 "a finish reason, or an explicit error"
             )
 
@@ -345,7 +364,7 @@ class SGLangRuntime(Runtime):
         if self.log_writer is not None:
             result = GenerationResult(text=text, metrics=metrics)
             self.log_writer.write(
-                generation_event("sglang", session, result, self.health(), event_type="tool_turn")
+                generation_event(self.runtime_name, session, result, self.health(), event_type="tool_turn")
             )
         yield ToolTurnChunk.completed(turn)
 
@@ -400,13 +419,14 @@ class SGLangRuntime(Runtime):
         if isinstance(text_or_messages, list):
             if generation is None:
                 generation = GenerationConfig.from_dict(self.config.get("generation", {}))
+            template_options = self.tool_protocol.template_options(generation)
             try:
                 text = self.tokenizer.apply_chat_template(
                     text_or_messages,
                     tokenize=False,
                     add_generation_prompt=True,
-                    enable_thinking=generation.enable_thinking,
                     tools=tools,
+                    **template_options,
                 )
             except TypeError:
                 text = self.tokenizer.apply_chat_template(
@@ -458,6 +478,11 @@ class SGLangRuntime(Runtime):
         if model_name:
             cmd.extend(["--served-model-name", str(model_name)])
         return cmd
+
+    def _server_env_updates(self) -> dict[str, str]:
+        return {
+            "CUDA_VISIBLE_DEVICES": str(self.config.get("gpu", {}).get("device", 0))
+        }
 
     def _api_base(self) -> str:
         server_cfg = self.config.get("server", {})

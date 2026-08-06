@@ -7,6 +7,8 @@ from .qwen_tools import (
     InteractiveToolApprovalGateway,
     LocalQwenToolApp,
     LocalQwenToolHandle,
+    LocalToolLoopApp,
+    LocalToolLoopHandle,
 )
 
 __all__ = [
@@ -18,6 +20,8 @@ __all__ = [
     "InteractiveToolApprovalGateway",
     "LocalQwenToolApp",
     "LocalQwenToolHandle",
+    "LocalToolLoopApp",
+    "LocalToolLoopHandle",
     "main",
     "run_cli",
 ]

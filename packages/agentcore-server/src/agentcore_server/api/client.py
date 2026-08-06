@@ -128,6 +128,10 @@ class AgentLab:
             from agentcore_server.runtime.sglang import SGLangRuntime
 
             return SGLangRuntime(self.config, project_root=self.project_root, log_writer=writer)
+        if runtime_name == "vllm":
+            from agentcore_server.runtime.vllm import VLLMRuntime
+
+            return VLLMRuntime(self.config, project_root=self.project_root, log_writer=writer)
         if runtime_name == "lmdeploy":
             from agentcore_server.runtime.lmdeploy import LMDeployRuntime
 

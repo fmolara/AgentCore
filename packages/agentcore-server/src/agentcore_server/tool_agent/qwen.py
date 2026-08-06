@@ -9,40 +9,40 @@ from agentcore_server.agents import Agent
 from agentcore_server.generation import AssistantTurn, ToolCall, ToolResult
 from agentcore_server.tasks import Task, TaskStatus
 from agentcore_server.tool_agent.models import (
-    QwenToolAgentLimits,
-    QwenToolRunResult,
+    ToolAgentLimits,
+    ToolRunResult,
     ToolApprovalGateway,
     ToolApprovalRequest,
     ToolSteeringInbox,
 )
 from agentcore_server.tool_agent.tools import (
-    QwenToolRegistry,
+    ToolRegistry,
     ToolSafetyViolation,
     ValidatedToolCall,
     encode_tool_result,
 )
+from agentcore_server.tool_agent.protocols import TOOL_AGENT_SYSTEM_PROMPT
 
 
-QWEN_TOOL_AGENT_SYSTEM_PROMPT = """You are QwenToolAgent, a careful coding agent operating on a real workspace.
-Use the native tools to inspect files before editing. Do not stop at an up-front ActionPlan: the host requests operator approval for each concrete side-effecting tool call. Prefer edit for exact localized changes to existing files; use write_file mainly for new files. Never rewrite a complete project when a local edit is sufficient. If a large edit is rejected, split it into smaller localized exact edits. Inspect tool failures and recover instead of claiming success. Do not finish merely because edits were applied. When the task explicitly requests configured build or test checks, run them and repair any failures before finishing. Inspect git_diff after the final changes. Never claim a tool succeeded unless its tool result says so. Do not create commits. Return a concise final summary only after required checks and diff inspection are complete. Do not expose hidden reasoning."""
+QWEN_TOOL_AGENT_SYSTEM_PROMPT = TOOL_AGENT_SYSTEM_PROMPT
 
 
-class QwenToolAgent:
-    """Persistent Qwen-native tool loop with AgentCore workspace and approval safety."""
+class ToolLoopAgent:
+    """Persistent native tool loop with AgentCore workspace and approval safety."""
 
     def __init__(
         self,
         agent: Agent,
         *,
         approval_gateway: ToolApprovalGateway,
-        limits: QwenToolAgentLimits | None = None,
+        limits: ToolAgentLimits | None = None,
         steering: ToolSteeringInbox | None = None,
     ) -> None:
         self.agent = agent
         self.approval_gateway = approval_gateway
-        self.limits = limits or QwenToolAgentLimits()
+        self.limits = limits or ToolAgentLimits()
         self.steering = steering or ToolSteeringInbox()
-        self.registry = QwenToolRegistry(
+        self.registry = ToolRegistry(
             agent.workspace,
             default_read_lines=self.limits.default_read_lines,
             max_read_lines=self.limits.max_read_lines,
@@ -55,15 +55,17 @@ class QwenToolAgent:
             max_changed_lines=self.limits.max_changed_lines,
         )
 
-    def run(self, task: Task, instruction: str) -> QwenToolRunResult:
+    def run(self, task: Task, instruction: str) -> ToolRunResult:
         if task.status != TaskStatus.CREATED:
-            raise ValueError("Qwen tool loop requires a created task")
+            raise ValueError("native tool loop requires a created task")
         if task not in self.agent.tasks():
             raise ValueError("task is not owned by this agent")
         task.start()
         self.agent.session.add_user_message(instruction)
-        self._emit("agent.loop.started", "Qwen tool loop started", task, {
+        protocol = getattr(self.agent.runtime, "tool_protocol", None)
+        self._emit("agent.loop.started", "Native tool loop started", task, {
             "limits": self.limits.__dict__,
+            "protocol": getattr(protocol, "name", "qwen"),
             "tools": list(self.registry.definitions),
         })
         results: list[ToolResult] = []
@@ -96,7 +98,7 @@ class QwenToolAgent:
                 })
                 if not turn.tool_calls:
                     if not turn.text.strip():
-                        raise RuntimeError("Qwen returned neither tool calls nor a final response")
+                        raise RuntimeError("model returned neither tool calls nor a final response")
                     missing = self._missing_completion_requirements(
                         required_checks=required_checks,
                         require_git_diff=require_git_diff,
@@ -113,14 +115,14 @@ class QwenToolAgent:
                         self.agent.session.add_user_message(message)
                         self._emit(
                             "agent.completion.incomplete",
-                            "Qwen attempted to finish before required work completed",
+                            "Model attempted to finish before required work completed",
                             task,
                             {"turn": turns, "missing": missing},
                         )
                         continue
                     final_text = turn.text
                     task.complete()
-                    self._emit("agent.final", "Qwen tool agent completed", task, {
+                    self._emit("agent.final", "Native tool agent completed", task, {
                         "text": final_text,
                     })
                     break
@@ -218,7 +220,7 @@ class QwenToolAgent:
                 task.cancel(error)
         except LoopLimitError as exc:
             error = str(exc)
-            self._emit("agent.loop.limit_reached", "Qwen tool loop limit reached", task, {
+            self._emit("agent.loop.limit_reached", "Native tool loop limit reached", task, {
                 "error": error,
             })
             if task.status == TaskStatus.RUNNING:
@@ -241,7 +243,7 @@ class QwenToolAgent:
                 diff = self.agent.git.diff().stdout if self.agent.git.is_repo() else ""
                 self._emit("git.diff", "Final Git diff captured", task, {"diff": diff})
 
-        return QwenToolRunResult(
+        return ToolRunResult(
             status=task.status.value,
             final_text=final_text,
             turns=turns,
@@ -272,7 +274,7 @@ class QwenToolAgent:
                             if capacity.get("sufficient")
                             else "agent.context.insufficient"
                         )
-                        self._emit(event_type, "Qwen tool-turn context capacity checked", task, {
+                        self._emit(event_type, "Native tool-turn context capacity checked", task, {
                             **capacity,
                             "turn": turn_number,
                         })
@@ -527,6 +529,9 @@ class QwenToolAgent:
 
 class ToolAgentCancelled(RuntimeError):
     pass
+
+
+QwenToolAgent = ToolLoopAgent
 
 
 class LoopLimitError(RuntimeError):

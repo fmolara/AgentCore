@@ -7,6 +7,7 @@ This project is not an LLM runtime. It is the application and orchestration
 layer that sits on top of existing runtimes such as:
 
 - SGLang
+- vLLM
 - LMDeploy
 - HuggingFace Transformers
 
@@ -17,10 +18,11 @@ workspaces, local Git workflows, reviewable plans, and approved task execution.
 Current runtime roles:
 
 - Primary runtime: SGLang
+- Native multi-protocol tool runtime: vLLM
 - Secondary runtime: LMDeploy
 - Reference runtime: HuggingFace Transformers
 
-The platform currently includes runtime adapters for all three backends while
+The platform currently includes runtime adapters for all four backends while
 keeping the public `AgentLab` API runtime-independent.
 
 ## Current Status

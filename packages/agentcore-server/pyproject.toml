@@ -31,6 +31,10 @@ sglang = [
   "Jinja2",
   "transformers",
 ]
+vllm = [
+  "Jinja2",
+  "transformers",
+]
 lmdeploy = [
   "Jinja2",
   "transformers",
@@ -50,4 +54,5 @@ where = ["src"]
   "config/sglang-a100-iterative.yaml",
   "config/sglang-qwen-tools.example.yaml",
   "config/transformers-a100.yaml",
+  "config/vllm-native-tools.example.yaml",
 ]

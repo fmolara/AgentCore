@@ -12,10 +12,10 @@ from agentcore_server.api.client import AgentLab
 from agentcore_server.events import EventSink
 from agentcore_server.tasks import Task, TaskReport
 from agentcore_server.tool_agent import (
-    QWEN_TOOL_AGENT_SYSTEM_PROMPT,
-    QwenToolAgent,
-    QwenToolAgentLimits,
-    QwenToolRunResult,
+    TOOL_AGENT_SYSTEM_PROMPT,
+    ToolAgentLimits,
+    ToolLoopAgent,
+    ToolRunResult,
     ToolApprovalDecision,
     ToolApprovalRequest,
     ToolSteeringInbox,
@@ -137,24 +137,24 @@ class InteractiveToolApprovalGateway:
 
 
 @dataclass
-class LocalQwenToolHandle:
+class LocalToolLoopHandle:
     task: Task
     thread: Thread
     done: Event
-    result: QwenToolRunResult | None = None
+    result: ToolRunResult | None = None
     error: BaseException | None = None
 
     @property
     def running(self) -> bool:
         return self.thread.is_alive()
 
-    def wait(self, timeout: float | None = None) -> QwenToolRunResult | None:
+    def wait(self, timeout: float | None = None) -> ToolRunResult | None:
         self.thread.join(timeout)
         return self.result
 
 
-class LocalQwenToolApp:
-    """Local composition for the topology-neutral Qwen native tool loop."""
+class LocalToolLoopApp:
+    """Local composition for the topology-neutral native tool loop."""
 
     def __init__(
         self,
@@ -175,18 +175,18 @@ class LocalQwenToolApp:
         )
         self.steering = ToolSteeringInbox()
         self.agent: Agent = lab.create_agent(
-            system_prompt=system_prompt or QWEN_TOOL_AGENT_SYSTEM_PROMPT,
+            system_prompt=system_prompt or TOOL_AGENT_SYSTEM_PROMPT,
             workspace_root=workspace,
             event_sink=event_sink,
         )
-        self.tool_agent = QwenToolAgent(
+        self.tool_agent = ToolLoopAgent(
             self.agent,
             approval_gateway=self.approval_gateway,
-            limits=QwenToolAgentLimits.from_config(lab.config.get("tool_agent")),
+            limits=ToolAgentLimits.from_config(lab.config.get("tool_agent")),
             steering=self.steering,
         )
         self._started = False
-        self._handle: LocalQwenToolHandle | None = None
+        self._handle: LocalToolLoopHandle | None = None
         self._lock = RLock()
 
     def start(self, *, warmup: bool = True) -> None:
@@ -215,19 +215,21 @@ class LocalQwenToolApp:
             self._started = False
 
     def create_task(self, instruction: str) -> Task:
-        title = next((line.strip() for line in instruction.splitlines() if line.strip()), "Qwen tool task")
+        title = next((line.strip() for line in instruction.splitlines() if line.strip()), "Native tool task")
+        protocol = getattr(self.lab.runtime, "tool_protocol", None)
+        protocol_name = getattr(protocol, "name", "qwen")
         return self.agent.create_task(
             title=title[:120],
             description=instruction,
-            metadata={"topology": "local", "agent": "qwen-tools"},
+            metadata={"topology": "local", "agent": "tool-loop", "protocol": protocol_name},
         )
 
-    def run_async(self, task: Task, instruction: str) -> LocalQwenToolHandle:
+    def run_async(self, task: Task, instruction: str) -> LocalToolLoopHandle:
         with self._lock:
             if self._handle is not None and self._handle.running:
-                raise RuntimeError("a Qwen tool-agent task is already running")
+                raise RuntimeError("a native tool-agent task is already running")
             done = Event()
-            handle: LocalQwenToolHandle
+            handle: LocalToolLoopHandle
 
             def run() -> None:
                 try:
@@ -237,8 +239,8 @@ class LocalQwenToolApp:
                 finally:
                     done.set()
 
-            thread = Thread(target=run, name=f"agentcore-qwen-tools-{task.id[:8]}")
-            handle = LocalQwenToolHandle(task=task, thread=thread, done=done)
+            thread = Thread(target=run, name=f"agentcore-tool-loop-{task.id[:8]}")
+            handle = LocalToolLoopHandle(task=task, thread=thread, done=done)
             self._handle = handle
             thread.start()
             return handle
@@ -289,7 +291,7 @@ class LocalQwenToolApp:
         return {
             "runtime_ready": self.lab.ready(),
             "task": task.as_dict(),
-            "agent": "qwen-tools",
+            "agent": "tool-loop",
             "running": running,
             "pending_approval": None if pending is None else pending.as_dict(),
             "workspace": self.agent.workspace.as_dict(),
@@ -302,3 +304,7 @@ class LocalQwenToolApp:
         if not self.agent.git.is_repo():
             return ""
         return self.agent.git.diff().stdout
+
+
+LocalQwenToolApp = LocalToolLoopApp
+LocalQwenToolHandle = LocalToolLoopHandle

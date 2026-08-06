@@ -64,7 +64,7 @@ class ValidatedToolCall:
         return value if isinstance(value, str) else None
 
 
-class QwenToolRegistry:
+class ToolRegistry:
     def __init__(
         self,
         workspace: Workspace,
@@ -559,6 +559,9 @@ class QwenToolRegistry:
     def _run_check(self, args: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         result = self.workspace.checks.run(args["check"])
         return result.ok, {"success": result.ok, "check": result.as_dict()}
+
+
+QwenToolRegistry = ToolRegistry
 
 
 def encode_tool_result(
