@@ -1,8 +1,14 @@
-# Planner v2
+# Planner v2 (Legacy Compatibility)
 
-Planner v2 adds bounded workspace discovery before producing a reviewable
-`ActionPlan`. It is available as `planner.mode: iterative`; `simple` remains
-the compatibility default.
+Planner v2 is retained for existing ActionPlan, PlanProposal, TaskExecutor,
+serialized-plan, CLI, and HTTP compatibility. It adds bounded workspace
+discovery before producing a reviewable `ActionPlan` and is available as
+`planner.mode: iterative`; `simple` remains the planner compatibility default.
+
+New local coding-agent work should use `ToolLoopAgent`, whose persistent native
+tool transcript is documented in [QWEN_TOOL_AGENT.md](QWEN_TOOL_AGENT.md).
+Planner finalization and planner context-compaction research are not part of
+the product direction described here.
 
 ## State Machine
 

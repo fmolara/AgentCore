@@ -12,8 +12,9 @@ layer that sits on top of existing runtimes such as:
 - HuggingFace Transformers
 
 The goal is to provide stable Python abstractions for runtime management,
-persistent conversations, generation metrics, structured logging, managed
-workspaces, local Git workflows, reviewable plans, and approved task execution.
+persistent conversations, native model tool calls, generation metrics,
+structured traces, managed workspaces, local Git inspection, and explicitly
+approved coding operations.
 
 Current runtime roles:
 
@@ -27,35 +28,31 @@ keeping the public `AgentLab` API runtime-independent.
 
 ## Current Status
 
-Milestone 1, Core Platform, is complete. It established the runtime-independent
-foundation:
+AgentCore's primary coding workflow is a persistent, incremental native-tool
+loop. `ToolLoopAgent` lets the model inspect the real workspace, request one or
+more structured tools, receive each concrete result, recover from failures,
+run configured checks, inspect Git diff, and then provide a final response.
+Qwen, Mistral, and OpenAI Harmony protocols share the same host-side tool and
+safety implementation.
 
-- `AgentLab`, `Agent`, and `Session`;
-- Transformers, SGLang, and LMDeploy runtime adapters;
-- warmup and health reporting;
-- persistent benchmarks;
-- structured JSONL logging;
-- runtime contract tests.
+The platform provides:
 
-Milestone 2, Coding Workspace, is complete. AgentCore can now:
+- `AgentLab`, `Agent`, persistent `Session` transcripts, and `TaskReport`;
+- Transformers, SGLang, LMDeploy, and vLLM runtime adapters;
+- workspace-confined, bounded read, search, exact-edit, and write operations;
+- complete pre-mutation previews and approval for every edit, write, and check;
+- symbolic allowlisted checks with trusted argument vectors and `shell=False`;
+- local Git status and diff inspection without model-visible commit or push;
+- structured JSONL traces, cooperative cancellation, and bounded agent loops;
+- a local tool-agent CLI plus the existing HTTP server and remote client;
+- a frozen daily-coding qualification manifest.
 
-- manage workspace-scoped files;
-- run constrained local Git workflows;
-- create tasks;
-- propose validated action plans;
-- require explicit approval for mutating plans;
-- execute approved plans;
-- report task state and Git diffs;
-- create checkpoints;
-- plan and execute restores;
-- expose an interactive CLI;
-- expose a localhost HTTP API;
-- stream visible assistant output and operational events through SSE;
-- request cooperative cancellation.
+The previous ActionPlan/PlanProposal workflow remains available as a legacy
+compatibility mode. It is not the recommended coding-agent path.
 
-AgentCore still does not expose shell access, arbitrary subprocess execution,
-network Git operations, automatic Git commits, production authentication, or
-persistent server storage.
+AgentCore still does not expose model-visible shell access, arbitrary
+subprocess execution, network Git operations, automatic Git commits,
+production authentication, or persistent server storage.
 
 ## Public API
 
@@ -201,9 +198,10 @@ Minimal lifecycle:
 curl -s http://127.0.0.1:8080/health
 ```
 
-Create an agent, create a task, request a proposal, approve explicitly, then
-execute. Mutating plans are never executed automatically and Git commits are
-never created automatically.
+The HTTP API retains the legacy proposal workflow for compatibility. Mutating
+plans are never executed automatically and Git commits are never created
+automatically. Native `ToolLoopAgent` orchestration is currently local-first
+and is not exposed through the distributed API.
 
 For streamed planning, use `POST /v1/tasks/{task_id}/proposals/stream`. The
 stream exposes only visible assistant text plus structured operational events.
@@ -212,30 +210,32 @@ Cancellation is cooperative via `POST /v1/tasks/{task_id}/cancel`.
 See [HTTP API](docs/architecture/HTTP_API.md) for endpoint details and SSE
 format.
 
-## Local Mode
+## Local Tool Agent
 
-AgentCore can also run orchestration directly in one process, without FastAPI,
-HTTP, SSE, or `agentclient`:
+Run the recommended incremental coding workflow directly in one process,
+without FastAPI, HTTP, SSE, or `agentclient`:
 
 ```bash
 agentcore-local \
-  --config config/sglang-a100.yaml \
-  --workspace workspace/project
+  --agent tool-loop \
+  --config config/sglang-qwen-tools.yaml \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --trace-file trace.jsonl
 ```
 
-The local composition reuses the same planner, proposal, approval,
-`TaskExecutor`, workspace, and runtime implementations as distributed mode.
-Proposal-only diagnostics are available with `--proposal-only` and
-`--trace-file`. Execution still requires explicit approval, and Git commits
-remain manual.
+The model receives native tools rather than a request for a complete plan.
+Read-only calls run under policy; every `edit`, `write_file`, and `run_check`
+call displays its complete AgentCore-generated effect and requires a unique
+approval tied to the call ID and preview digest. `qwen-tools` remains a CLI
+compatibility alias.
 
-A task supplied with `--prompt` or `--prompt-file` enters the interactive
-command loop unless `--proposal-only` or the explicit non-interactive
-`--approve` flag is present. This supports reviewing a multiline prompt-file
-proposal before entering `/approve` or `/reject`.
+Use `config/vllm-harmony-tools.yaml` as the public starting point for the
+strong gpt-oss/Harmony profile and `config/sglang-qwen-tools.yaml` for the fast
+Qwen/SGLang profile. Adjust model paths, runtime executables, ports, and context
+capacity in an ignored local configuration; the checked-in files are examples.
 
-Planner v2 can perform bounded read-only discovery before producing the final
-proposal:
+The legacy planner remains available explicitly:
 
 ```bash
 agentcore-local \
@@ -247,15 +247,33 @@ agentcore-local \
   --trace-file result.jsonl
 ```
 
-`simple` remains the compatibility default. Iterative discovery is bounded,
-observable, and shared by local and distributed composition roots. Build and
-test execution is available only through trusted symbolic `run_check`
-configuration and requires explicit approval.
+Planner modes produce ActionPlan proposals and use `TaskExecutor`. They are
+supported for serialized-plan and API compatibility, not recommended for new
+coding-agent work. Build and test execution remains available only through
+trusted symbolic `run_check` configuration and explicit approval.
 
 See [Local Mode](docs/architecture/LOCAL_MODE.md) for topology, commands,
-diagnostics, and exit codes.
-See [Planner v2](docs/architecture/PLANNER_V2.md) for exploration limits,
-event separation, final-plan validation, and configured checks.
+previews, diagnostics, and exit codes; [Native Tool Agent](docs/architecture/QWEN_TOOL_AGENT.md)
+for loop safety; and [Native Tool Protocols](docs/architecture/NATIVE_TOOL_PROTOCOLS.md)
+for adapter responsibilities. [Planner v2](docs/architecture/PLANNER_V2.md)
+documents the legacy planner mode.
+
+## Model Positioning
+
+- **gpt-oss-120b:** primary experimental model for controlled daily coding
+  trials, using the verified vLLM/Harmony path. It is the stronger local choice
+  for broad or reasoning-heavy work, but is not production-proven.
+- **Qwen3.6-27B:** fast, lower-latency fallback using SGLang and the native
+  Qwen tool parser.
+- **Qwen3-Coder-30B-A3B-Instruct and Devstral Small 2 24B:** evaluated
+  experimental options, not primary recommendations.
+
+On the frozen daily-coding milestone suite, gpt-oss completed 9/10 tasks and
+Qwen3.6 completed 5/5 tasks in a preselected representative subset. These are
+qualification outcomes, not statistically universal success rates; every
+accepted result also received independent human-equivalent review. See the
+[milestone decision](docs/milestones/DS4_STYLE_TOOL_AGENT.md) and
+[benchmark manifest](benchmarks/daily-coding/manifest.yaml).
 
 ## Package Layout
 
@@ -300,13 +318,16 @@ A100_AGENT_LAB_RUN_INTEGRATION=1 \
 
 ## Architecture
 
-Milestone 1 architecture documents:
+Current architecture documents:
 
 - [Core Platform](docs/architecture/CORE_PLATFORM.md)
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
 - [Coding Workspace](docs/architecture/CODING_WORKSPACE.md)
 - [Local Mode](docs/architecture/LOCAL_MODE.md)
-- [Planner v2](docs/architecture/PLANNER_V2.md)
+- [Native Tool Agent](docs/architecture/QWEN_TOOL_AGENT.md)
+- [Native Tool Protocols](docs/architecture/NATIVE_TOOL_PROTOCOLS.md)
+- [DS4-Style Tool Agent Milestone](docs/milestones/DS4_STYLE_TOOL_AGENT.md)
+- [Planner v2 (legacy compatibility)](docs/architecture/PLANNER_V2.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)

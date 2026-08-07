@@ -1,203 +1,169 @@
 # Local AgentCore Mode
 
-The local runner also supports the incremental native tool workflow
-documented in [QWEN_TOOL_AGENT.md](QWEN_TOOL_AGENT.md). Select it with
-`--agent tool-loop`; `--agent qwen-tools` remains a compatibility alias and
-planner modes remain available.
-
-AgentCore supports a local orchestration topology in addition to its existing
-HTTP server topology. Local mode belongs to the `agentcore-server`
-distribution; it is not a separate package.
+Local mode runs AgentCore orchestration directly in one process without
+FastAPI, HTTP, SSE, or `agentclient`. The recommended coding path is the
+incremental native tool workflow selected with `--agent tool-loop`.
+`--agent qwen-tools` remains a compatibility alias. Legacy planner modes remain
+available for ActionPlan and serialized-plan compatibility.
 
 ## Topologies
 
-### 1. Local AgentCore Process
+### Local Tool Agent
 
-Implemented in this phase.
+One process owns:
 
-One process owns AgentCore orchestration, including:
+- runtime lifecycle and the persistent model transcript;
+- `Agent`, `Session`, and `Task`;
+- the topology-neutral `ToolLoopAgent`;
+- workspace, exact edits, complete side-effect previews, approval, checks,
+  Git inspection, event trace, and the authoritative `TaskReport`.
 
-- runtime lifecycle;
-- `Agent` and `Session`;
-- `Task`;
-- `SimpleLLMPlanner` or bounded `IterativeLLMPlanner`;
-- `PlanProposal` and `ApprovalPolicy`;
-- `TaskExecutor`;
-- workspace, files, and local Git;
-- terminal rendering and ordered JSONL traces.
-
-The process does not run FastAPI, use HTTP, emulate SSE, import `agentclient`,
-or launch an AgentCore server subprocess. An inference backend such as SGLang
-may still be an externally managed process launched through the existing
-runtime adapter.
-
-### 2. AgentCore Server and Remote Client
-
-Implemented by `agentcore-server` plus the lightweight `agentclient` package.
-The client communicates over HTTP and SSE using `agentcore-protocol`. This
-topology is appropriate when the workspace and inference runtime live on a
-server that is separate from the operator's machine.
-
-### 3. Local AgentCore with Remote Inference
-
-Future topology. AgentCore orchestration and the workspace would be local,
-while model inference would be provided by a remote runtime endpoint. This
-phase does not add that transport or alter runtime adapters.
-
-## Shared Domain Path
-
-Local and distributed modes use the same domain implementations:
+Inference may still be supplied by an externally managed SGLang or vLLM
+server. The local process does not import `agentclient` or start an AgentCore
+HTTP server subprocess.
 
 ```text
-AgentLab
-  -> Agent
-  -> SimpleLLMPlanner
-  -> PlanProposal / ApprovalPolicy
-  -> TaskExecutor
-  -> Workspace / Files / Git
-  -> TaskReport
+AgentLab / runtime
+  -> ToolProtocolAdapter (Qwen, Mistral, or Harmony)
+  -> ToolLoopAgent
+  -> Workspace / Approval / run_check / Git
+  -> Task / TaskReport / Event trace
 ```
 
-Local mode adds only a composition root, terminal approval flow, renderer, and
-an `AgentEvent` sink. It does not contain local copies of planner, executor,
-task, or workspace behavior.
+The protocol adapter only encodes and decodes model-native messages. Tool
+validation, approval, execution, limits, cancellation, and lifecycle are
+shared. There are no per-model copies of the tool loop.
 
-`AgentLab` currently lives in `agentcore_server.api.client` even though it is a
-topology-neutral composition object. Moving it is deferred to avoid combining
-a namespace refactor with local mode.
+### Server And Remote Client
 
-## Interactive Use
+`agentcore-server` plus the lightweight `agentclient` package provide the
+distributed HTTP/SSE topology. It retains the planner/proposal workflow for
+compatibility. Native `ToolLoopAgent` HTTP exposure is deferred; local and
+distributed algorithms are not duplicated.
+
+### Legacy Local Planner
+
+The local runner can still compose `SimpleLLMPlanner` or
+`IterativeLLMPlanner`, `PlanProposal`, `ApprovalPolicy`, and `TaskExecutor`.
+This path supports existing CLI and serialized-plan behavior but is not the
+recommended coding-agent architecture.
+
+## Tool-Agent Use
 
 ```bash
 agentcore-local \
-  --config config/sglang-a100.yaml \
-  --workspace workspace/project
+  --agent tool-loop \
+  --config config/sglang-qwen-tools.yaml \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --trace-file trace.jsonl
 ```
 
-The same command is available as:
+The module form is equivalent:
 
 ```bash
 python -m agentcore_server.local \
-  --config config/sglang-a100.yaml \
+  --agent tool-loop \
+  --config config/sglang-qwen-tools.yaml \
   --workspace workspace/project
 ```
 
-Interactive commands:
+Tool-agent commands are:
 
 ```text
 /status
-/plan
-/approve
-/reject
 /diff
 /report
+/preview
+/approve
+/reject [reason]
 /abort
 /quit
 /help
 ```
 
-Every proposal is shown before execution. `/approve` is explicit, `/reject`
-does not mutate the workspace, and `/abort` requests cooperative cancellation
-between atomic actions. AgentCore never creates a Git commit automatically.
+Read-only tools may execute automatically under policy. Every `edit`,
+`write_file`, and `run_check` pauses for a decision on that exact native
+tool-call ID. AgentCore computes the effect from the real workspace and shows
+the complete preview; approval binds the call ID and preview digest. The effect
+is recomputed immediately before execution, so a stale preview cannot mutate
+the workspace. `/preview` reopens the retained complete artifact.
 
-## Non-Interactive Use
+A rejected call performs no mutation and becomes a normal `role=tool` result,
+allowing the model to recover within configured rejection and loop limits.
+Check failures are handled the same way. AgentCore never creates a Git commit
+automatically.
 
-Pass a task directly:
+`--agent tool-loop` is mutually exclusive with planner-only flags such as
+`--planner`, `--proposal-only`, and `--approve`. Blanket approval is not
+available for the tool loop.
 
-```bash
-agentcore-local \
-  --config config/sglang-a100.yaml \
-  --workspace workspace/project \
-  --prompt "Replace return 0 with return 1 in parser.c." \
-  --approve
-```
+## Protocol Configuration
 
-Or read the exact task from a file:
+Select `tool_agent.protocol` as one of:
 
-```bash
-agentcore-local \
-  --config config/sglang-a100.yaml \
-  --workspace workspace/project \
-  --prompt-file task.txt \
-  --proposal-only
-```
+- `qwen` for native Qwen function calls, normally through SGLang
+  `qwen3_coder`;
+- `mistral` for native Mistral function calls through vLLM;
+- `harmony` for gpt-oss through vLLM's OpenAI/Harmony parser.
 
-`--proposal-only` never executes actions and requires no approval. Any
-non-interactive execution requires the visible `--approve` flag, including a
-plan that contains only read-only actions.
+Checked-in examples use relative placeholder model paths. Copy one to an
+ignored local file and set the actual model path, Python/runtime executable,
+port, context capacity, and trusted checks. The current starting points are:
 
-## Prompt Sources And Interactive Approval
+- `config/sglang-qwen-tools.yaml` for Qwen3.6-27B;
+- `config/vllm-harmony-tools.yaml` for gpt-oss-120b;
+- `config/vllm-native-tools.yaml` for a Mistral-compatible model.
 
-`--prompt` and `--prompt-file` are mutually exclusive. A prompt file is decoded
-as UTF-8 and its multiline contents, indentation, blank lines, non-ASCII text,
-and final newline are retained as the single task instruction.
+Machine-specific paths and trusted check environment values must not be added
+to public examples.
 
-When either option is supplied without `--proposal-only` or `--approve`, the
-runner generates and displays the proposal and then enters the normal command
-loop. Approval remains an explicit `/approve` command. EOF after proposal
-generation does not execute the proposal and returns the approval-required
-outcome. EOF before a task is entered exits without creating one.
+## Safety And Capacity
 
-`TaskReport` serializations include additive `final` and `lifecycle_phase`
-fields. Reports captured while an action is running are non-final snapshots;
-the orchestrator's report after a completed, failed, or cancelled transition
-is authoritative. Legacy serialized plans containing `task_report` remain
-executable, but planners no longer advertise that action because final report
-generation is an orchestration responsibility.
+The model-visible tools are limited to bounded directory/search/read and Git
+inspection plus exact unique edit, whole-file write, and symbolic checks.
+There is no arbitrary shell, network, package installation, commit, or push
+tool. Workspace traversal and symlink escapes are rejected.
 
-## Proposal Diagnostics
+Before each model request, AgentCore tokenizes the exact rendered transcript
+and native tool schemas, reserves a safety margin, and clamps output to the
+remaining configured context. Requests below the minimum output reserve fail
+visibly. Tool results and trace payloads are bounded; the transcript is not
+rebuilt into a planner EvidencePack.
 
-An ordered public trace can be written as JSONL:
+## Traces And Exit Codes
 
-```bash
-agentcore-local \
-  --config config/sglang-a100.yaml \
-  --workspace workspace/project \
-  --prompt-file task.txt \
-  --proposal-only \
-  --trace-file result.jsonl
-```
-
-The trace may include:
-
-- the sanitized effective planner prompt;
-- visible assistant text;
-- raw final visible model text available to the planner;
-- parsed `PlannerResult`, `PlanProposal`, and `ActionPlan`;
-- structural validation and approval-policy results;
-- execution events, `TaskReport`, and Git diff.
-
-It does not request, expose, or store hidden chain-of-thought.
-
-Use `--planner iterative` to override the configuration for a bounded
-workspace-exploration and replanning run. Assistant events remain visible
-model text; exploration and replanning use separate structured lifecycle
-events. See [Planner v2](PLANNER_V2.md).
-
-## Exit Codes
+`--trace-file` writes ordered JSONL containing visible assistant output,
+structured tool lifecycle events, preview identifiers and digests, decisions,
+bounded results, and one terminal `TaskReport`. Hidden Harmony reasoning is not
+rendered as assistant text or public trace output.
 
 ```text
 0   success
 2   CLI or configuration error
 10  runtime unavailable
-20  structurally invalid proposal
-21  proposal rejected
+20  structurally invalid legacy proposal
+21  legacy proposal rejected
 22  explicit approval required
 23  task failed
 24  task cancelled
 70  unexpected local error
 ```
 
-A structurally valid but semantically poor proposal is not classified as
-invalid. It remains visible and can be rejected by the operator.
+## Legacy Planner Commands
 
-## Runtime Configuration
+Proposal-only diagnostics remain available for compatibility:
 
-Local mode uses the same runtime configuration as `agentcore-server`.
-Machine-specific paths belong in ignored local configuration files rather than
-public examples. For an externally managed SGLang installation, configure the
-model path and executable path prefix in that local file, then pass it through
-`--config`.
+```bash
+agentcore-local \
+  --config config/sglang-a100-iterative.yaml \
+  --planner iterative \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --proposal-only \
+  --trace-file proposal.jsonl
+```
 
-Runtime shutdown occurs in cleanup after success, rejection, cancellation, or
-an operational error.
+Legacy planner execution still requires explicit approval. See
+[PLANNER_V2.md](PLANNER_V2.md); it is compatibility documentation, not the
+recommended local coding workflow.

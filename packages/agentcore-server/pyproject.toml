@@ -54,5 +54,6 @@ where = ["src"]
   "config/sglang-a100-iterative.yaml",
   "config/sglang-qwen-tools.example.yaml",
   "config/transformers-a100.yaml",
+  "config/vllm-harmony-tools.example.yaml",
   "config/vllm-native-tools.example.yaml",
 ]

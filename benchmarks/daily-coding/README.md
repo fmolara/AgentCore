@@ -14,3 +14,13 @@ selected before primary-model results are observed.
 Each run must use a fresh clean clone, the exact prompt from the manifest, the
 same eight semantic tools, per-call approval, symbolic checks, an exported
 patch, and independent validation. A model run never creates a commit.
+
+The completed milestone qualification produced these bounded results:
+
+- gpt-oss-120b completed 9/10 tasks, with eight patches accepted without
+  rewrite and one accepted with a minor follow-up;
+- Qwen3.6-27B completed 5/5 tasks in the frozen representative subset.
+
+These numbers describe this suite and runtime configuration only. They are not
+universal model success rates. Complete pre-mutation approval and independent
+human-equivalent patch review remained part of acceptance.

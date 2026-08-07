@@ -1,34 +1,33 @@
-runtime: sglang
+runtime: vllm
 
 model:
-  path: models/Qwen3.6-27B
-  dtype: bfloat16
+  path: models/gpt-oss-120b
+  name: gpt-oss-120b
+  dtype: auto
   trust_remote_code: true
 
 gpu:
   device: 0
-  memory_fraction: 0.80
+  memory_fraction: 0.94
 
 context:
   max_context_tokens: 32768
 
 generation:
-  temperature: 0
+  temperature: 1.0
   max_tokens: 4096
   top_p: 1.0
-  enable_thinking: false
+  enable_thinking: true
 
 tool_agent:
-  max_model_turns: 32
-  max_total_tool_calls: 64
+  protocol: harmony
+  reasoning_effort: medium
+  max_model_turns: 40
+  max_total_tool_calls: 80
   max_tool_calls_per_turn: 8
   max_consecutive_tool_failures: 4
   max_single_tool_result_bytes: 65536
   max_total_tool_result_bytes: 524288
-  default_read_lines: 120
-  max_read_lines: 500
-  max_directory_depth: 4
-  max_search_results: 100
   context_safety_margin_tokens: 128
   minimum_output_tokens: 256
   max_edit_old_bytes: 65536
@@ -51,11 +50,11 @@ workspace:
 server:
   host: 127.0.0.1
   port: 31000
-  startup_timeout_sec: 180
+  startup_timeout_sec: 300
   python: python
-  reasoning_parser: qwen3
-  tool_call_parser: qwen3_coder
-  log_level: info
+  path_prefix:
+  tool_call_parser: openai
+  enforce_eager: true
 
 logging:
   path: experiments/logs
