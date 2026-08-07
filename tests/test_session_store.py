@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from a100_agent_lab.sessions import Session, SessionStore
+from agentcore_server.sessions import Session, SessionStore
 
 
 def test_session_store_create_get_list_reset_delete() -> None:

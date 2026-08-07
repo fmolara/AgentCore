@@ -8,12 +8,13 @@ from typing import Any, Iterator
 import httpx
 import pytest
 
-from a100_agent_lab.api.client import AgentLab
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.runtime.base import Runtime
-from a100_agent_lab.server import create_app
-from a100_agent_lab.sessions import Session, SessionStore
-from a100_agent_lab.workspace import Workspace
+from agentcore_protocol import API_VERSION, PROTOCOL_VERSION, SCHEMA_VERSION
+from agentcore_server.api.client import AgentLab
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.runtime.base import Runtime
+from agentcore_server.server import create_app
+from agentcore_server.sessions import Session, SessionStore
+from agentcore_server.workspace import Workspace
 
 
 class FakeRuntime(Runtime):
@@ -146,6 +147,9 @@ async def test_health_endpoint_and_localhost_safe_default(tmp_path, monkeypatch)
     assert data["status"] == "ok"
     assert data["safe_default_host"] == "127.0.0.1"
     assert data["ready"] is True
+    assert data["api_version"] == API_VERSION
+    assert data["protocol_version"] == PROTOCOL_VERSION
+    assert data["schema_version"] == SCHEMA_VERSION
 
 
 @pytest.mark.anyio
@@ -181,6 +185,8 @@ async def test_approval_then_execution_succeeds_and_git_diff_reports_change(tmp_
     assert approved.status_code == 200
     assert executed.status_code == 200
     assert executed.json()["status"] == "completed"
+    assert executed.json()["report"]["final"] is True
+    assert executed.json()["report"]["lifecycle_phase"] == "completed"
     assert "return 1;" in (workspace / "parser.c").read_text(encoding="utf-8")
     assert "+    return 1;" in diff.json()["stdout"]
 
@@ -206,6 +212,8 @@ async def test_task_report_endpoint(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["report"]["id"] == task_id
+    assert response.json()["report"]["final"] is False
+    assert response.json()["report"]["lifecycle_phase"] == "created"
 
 
 @pytest.mark.anyio

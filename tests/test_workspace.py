@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from a100_agent_lab.workspace import Workspace
+from agentcore_server.workspace import Workspace
 
 
 def test_workspace_read_write_list_exists_and_mkdir(tmp_path) -> None:

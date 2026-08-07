@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterator
 
-from a100_agent_lab import (
+from agentcore_server import (
     AgentLab,
     CreateCheckpointAction,
     GitDiffAction,
@@ -14,10 +14,10 @@ from a100_agent_lab import (
     TaskReportAction,
     WriteFileAction,
 )
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.logging.writer import JsonlWriter
-from a100_agent_lab.runtime.base import Runtime
-from a100_agent_lab.sessions import Session, SessionStore
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.logging.writer import JsonlWriter
+from agentcore_server.runtime.base import Runtime
+from agentcore_server.sessions import Session, SessionStore
 
 
 class FakeRuntime(Runtime):
@@ -122,6 +122,13 @@ def test_task_executor_runs_actions_and_completes_task(tmp_path, monkeypatch) ->
     assert "+    return 1;" in agent.git.diff().stdout
     assert result.report is not None
     assert result.report.status == "completed"
+    snapshot = result.actions[-1].data
+    assert snapshot["report_kind"] == "intermediate_snapshot"
+    assert snapshot["report"]["status"] == "running"
+    assert snapshot["report"]["final"] is False
+    assert snapshot["report"]["lifecycle_phase"] == "running"
+    assert result.report.final is True
+    assert result.report.lifecycle_phase == "completed"
     assert agent.git.current_commit() == commit_before
 
 

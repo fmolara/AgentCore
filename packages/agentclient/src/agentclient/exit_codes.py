@@ -1,0 +1,24 @@
+from enum import IntEnum
+
+
+class ExitCode(IntEnum):
+    """Stable agentclient process exit codes."""
+
+    SUCCESS = 0
+    CLI_USAGE_ERROR = 2
+
+    NETWORK_UNREACHABLE = 10
+    CONNECTION_REFUSED = 11
+    TLS_ERROR = 12
+    HTTP_ERROR = 13
+    PROTOCOL_INCOMPATIBLE = 14
+    SERVER_NOT_READY = 15
+    RUNTIME_NOT_READY = 16
+
+    TASK_FAILED = 20
+    TASK_CANCELLED = 21
+    PROPOSAL_REJECTED = 22
+    APPROVAL_REQUIRED = 23
+    STREAM_ERROR = 24
+
+    INTERNAL_CLIENT_ERROR = 70

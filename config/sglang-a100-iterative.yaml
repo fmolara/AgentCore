@@ -1,0 +1,58 @@
+runtime: sglang
+
+model:
+  path: models/Qwen3.6-27B
+  dtype: bfloat16
+  trust_remote_code: true
+
+gpu:
+  device: 0
+  memory_fraction: 0.80
+
+context:
+  max_context_tokens: 4096
+
+generation:
+  temperature: 0
+  max_tokens: 64
+  top_p: 1.0
+  enable_thinking: false
+
+planner:
+  mode: iterative
+  max_tokens: 1024
+  temperature: 0
+  exploration:
+    max_rounds: 3
+    max_actions_per_round: 8
+    max_total_actions: 20
+    max_directory_depth: 4
+    max_files_returned: 100
+    max_search_files_scanned: 1000
+    max_search_bytes: 4194304
+    max_single_file_bytes: 65536
+    max_total_observation_bytes: 262144
+    max_observation_text_per_action: 65536
+
+workspace:
+  root: workspace
+  checks:
+    build:
+      argv: ["make"]
+      timeout_sec: 30
+    test:
+      argv: ["make", "test"]
+      timeout_sec: 60
+
+server:
+  host: 127.0.0.1
+  port: 31000
+  startup_timeout_sec: 180
+  python: python
+  path_prefix:
+  reasoning_parser: qwen3
+  log_level: info
+
+logging:
+  path: experiments/logs
+  format: jsonl

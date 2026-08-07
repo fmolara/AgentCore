@@ -1,13 +1,13 @@
 # AgentCore
 
 AgentCore is an experimental platform for building persistent coding-agent
-systems on an NVIDIA A100 80GB PCIe server. The Python package is currently
-named `a100_agent_lab`.
+systems on an NVIDIA A100 80GB PCIe server.
 
 This project is not an LLM runtime. It is the application and orchestration
 layer that sits on top of existing runtimes such as:
 
 - SGLang
+- vLLM
 - LMDeploy
 - HuggingFace Transformers
 
@@ -18,10 +18,11 @@ workspaces, local Git workflows, reviewable plans, and approved task execution.
 Current runtime roles:
 
 - Primary runtime: SGLang
+- Native multi-protocol tool runtime: vLLM
 - Secondary runtime: LMDeploy
 - Reference runtime: HuggingFace Transformers
 
-The platform currently includes runtime adapters for all three backends while
+The platform currently includes runtime adapters for all four backends while
 keeping the public `AgentLab` API runtime-independent.
 
 ## Current Status
@@ -65,7 +66,7 @@ Normal application code should interact with:
 - `Session`
 
 ```python
-from a100_agent_lab import AgentLab
+from agentcore_server import AgentLab
 
 lab = AgentLab.from_config("config/transformers-a100.yaml")
 lab.start()
@@ -83,7 +84,7 @@ The higher-level `Agent` abstraction owns one persistent session and exposes a
 simple conversational API:
 
 ```python
-from a100_agent_lab import AgentLab
+from agentcore_server import AgentLab
 
 lab = AgentLab.from_config("config/sglang-a100.yaml")
 lab.start()
@@ -188,7 +189,7 @@ AgentCore also exposes a small localhost HTTP API with Server-Sent Events for
 task execution traces:
 
 ```bash
-python scripts/agentcore_server.py \
+agentcore-server \
   --config config/sglang-a100.yaml \
   --host 127.0.0.1 \
   --port 8080
@@ -210,6 +211,76 @@ Cancellation is cooperative via `POST /v1/tasks/{task_id}/cancel`.
 
 See [HTTP API](docs/architecture/HTTP_API.md) for endpoint details and SSE
 format.
+
+## Local Mode
+
+AgentCore can also run orchestration directly in one process, without FastAPI,
+HTTP, SSE, or `agentclient`:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100.yaml \
+  --workspace workspace/project
+```
+
+The local composition reuses the same planner, proposal, approval,
+`TaskExecutor`, workspace, and runtime implementations as distributed mode.
+Proposal-only diagnostics are available with `--proposal-only` and
+`--trace-file`. Execution still requires explicit approval, and Git commits
+remain manual.
+
+A task supplied with `--prompt` or `--prompt-file` enters the interactive
+command loop unless `--proposal-only` or the explicit non-interactive
+`--approve` flag is present. This supports reviewing a multiline prompt-file
+proposal before entering `/approve` or `/reject`.
+
+Planner v2 can perform bounded read-only discovery before producing the final
+proposal:
+
+```bash
+agentcore-local \
+  --config config/sglang-a100-iterative.yaml \
+  --planner iterative \
+  --workspace workspace/project \
+  --prompt-file task.txt \
+  --proposal-only \
+  --trace-file result.jsonl
+```
+
+`simple` remains the compatibility default. Iterative discovery is bounded,
+observable, and shared by local and distributed composition roots. Build and
+test execution is available only through trusted symbolic `run_check`
+configuration and requires explicit approval.
+
+See [Local Mode](docs/architecture/LOCAL_MODE.md) for topology, commands,
+diagnostics, and exit codes.
+See [Planner v2](docs/architecture/PLANNER_V2.md) for exploration limits,
+event separation, final-plan validation, and configured checks.
+
+## Package Layout
+
+AgentCore is now organized as a monorepo with separate installable packages:
+
+- `packages/agentcore-protocol`: shared HTTP/SSE schemas, errors, event model,
+  sync/async clients, and protocol version metadata.
+- `packages/agentcore-server`: server/domain/runtime package with `AgentLab`,
+  `Agent`, workspaces, tasks, planners, runtime adapters, FastAPI HTTP API, and
+  the `agentcore-server` console command.
+- `packages/agentclient`: lightweight remote terminal client. It talks only to
+  an AgentCore server over HTTP/SSE and does not import server/runtime internals.
+
+The old `a100_agent_lab` import path is retained only as a deprecated
+compatibility shim.
+
+Remote client usage:
+
+```bash
+agentclient --server http://127.0.0.1:8080
+agentclient --server http://192.168.1.20:8080 --workspace /srv/workspaces/demo
+```
+
+The `--workspace` value is interpreted by the server. The client does not read
+or write that path locally.
 
 ## Tests
 
@@ -234,6 +305,8 @@ Milestone 1 architecture documents:
 - [Core Platform](docs/architecture/CORE_PLATFORM.md)
 - [Runtime Support](docs/architecture/RUNTIME_SUPPORT.md)
 - [Coding Workspace](docs/architecture/CODING_WORKSPACE.md)
+- [Local Mode](docs/architecture/LOCAL_MODE.md)
+- [Planner v2](docs/architecture/PLANNER_V2.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)
 - [Roadmap](docs/architecture/ROADMAP.md)

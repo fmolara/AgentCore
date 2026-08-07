@@ -7,12 +7,12 @@ from typing import Any, Iterator
 import httpx
 import pytest
 
-from a100_agent_lab import AgentLab, ListEventSink, StreamChunk, TaskExecutor, WriteFileAction
-from a100_agent_lab.executor.actions import ActionResult
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.runtime.base import Runtime
-from a100_agent_lab.server import create_app
-from a100_agent_lab.sessions import Session, SessionStore
+from agentcore_server import AgentLab, ListEventSink, StreamChunk, TaskExecutor, WriteFileAction
+from agentcore_server.executor.actions import ActionResult
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.runtime.base import Runtime
+from agentcore_server.server import create_app
+from agentcore_server.sessions import Session, SessionStore
 
 
 class FakeStreamingRuntime(Runtime):

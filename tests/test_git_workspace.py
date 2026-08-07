@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from a100_agent_lab import AgentLab
-from a100_agent_lab.sessions import Session, SessionStore
-from a100_agent_lab.workspace import GitResult, Workspace
+from agentcore_server import AgentLab
+from agentcore_server.sessions import Session, SessionStore
+from agentcore_server.workspace import GitResult, Workspace
 
 
 class FakeRuntime:
@@ -55,6 +55,49 @@ def test_git_status_add_commit_log_and_diff(tmp_path, monkeypatch) -> None:
 
     assert diff.ok
     assert "+two" in diff.stdout
+
+
+def test_git_diff_includes_untracked_files_but_not_condensed_directories(
+    tmp_path, monkeypatch
+) -> None:
+    set_test_git_identity(monkeypatch)
+    workspace = Workspace(tmp_path / "repo")
+    workspace.git.init()
+    workspace.write_text("tracked.txt", "tracked\n")
+    workspace.git.add("tracked.txt")
+    workspace.git.commit("Initial commit")
+
+    workspace.write_text("new.txt", "new content\n")
+    workspace.write_text("new name.txt", "spaced content\n")
+    generated = workspace.root / "build-output"
+    generated.mkdir()
+    (generated / "artifact.txt").write_text("generated\n", encoding="utf-8")
+
+    diff = workspace.git.diff()
+
+    assert diff.ok
+    assert "diff --git a/new.txt b/new.txt" in diff.stdout
+    assert "+new content" in diff.stdout
+    assert "diff --git a/new name.txt b/new name.txt" in diff.stdout
+    assert "+spaced content" in diff.stdout
+    assert "build-output" not in diff.stdout
+
+
+def test_git_diff_path_includes_one_untracked_file(tmp_path, monkeypatch) -> None:
+    set_test_git_identity(monkeypatch)
+    workspace = Workspace(tmp_path / "repo")
+    workspace.git.init()
+    workspace.write_text("tracked.txt", "tracked\n")
+    workspace.git.add("tracked.txt")
+    workspace.git.commit("Initial commit")
+    workspace.write_text("new.txt", "new content\n")
+    workspace.write_text("other.txt", "other\n")
+
+    diff = workspace.git.diff("new.txt")
+
+    assert "diff --git a/new.txt b/new.txt" in diff.stdout
+    assert "+new content" in diff.stdout
+    assert "other.txt" not in diff.stdout
 
 
 def test_git_add_validates_paths_and_blocks_traversal(tmp_path) -> None:

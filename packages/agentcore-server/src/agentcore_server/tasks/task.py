@@ -1,0 +1,565 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any, Callable
+from uuid import uuid4
+
+
+class TaskStatus(StrEnum):
+    CREATED = "created"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class TaskReport:
+    id: str
+    title: str
+    description: str
+    status: str
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    completed_at: str | None
+    failed_at: str | None
+    cancelled_at: str | None
+    failure_reason: str | None
+    cancellation_requested: bool = False
+    cancellation_reason: str | None = None
+    git_branch: str | None = None
+    git_status: str | None = None
+    git_diff: str | None = None
+    files_changed: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def final(self) -> bool:
+        return self.status in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }
+
+    @property
+    def lifecycle_phase(self) -> str:
+        return self.status
+
+    @classmethod
+    def from_task(
+        cls,
+        task: "Task",
+        *,
+        git_branch: str | None = None,
+        git_status: str | None = None,
+        git_diff: str | None = None,
+        files_changed: tuple[str, ...] = (),
+    ) -> "TaskReport":
+        return cls(
+            id=task.id,
+            title=task.title,
+            description=task.description,
+            status=task.status.value,
+            created_at=task.created_at.isoformat(),
+            updated_at=task.updated_at.isoformat(),
+            started_at=None if task.started_at is None else task.started_at.isoformat(),
+            completed_at=None if task.completed_at is None else task.completed_at.isoformat(),
+            failed_at=None if task.failed_at is None else task.failed_at.isoformat(),
+            cancelled_at=None if task.cancelled_at is None else task.cancelled_at.isoformat(),
+            failure_reason=task.failure_reason,
+            cancellation_requested=task.cancellation_requested,
+            cancellation_reason=task.cancellation_reason,
+            git_branch=git_branch,
+            git_status=git_status,
+            git_diff=git_diff,
+            files_changed=files_changed,
+            metadata=deepcopy(task.metadata),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "status": self.status,
+            "final": self.final,
+            "lifecycle_phase": self.lifecycle_phase,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "failed_at": self.failed_at,
+            "cancelled_at": self.cancelled_at,
+            "failure_reason": self.failure_reason,
+            "cancellation_requested": self.cancellation_requested,
+            "cancellation_reason": self.cancellation_reason,
+            "git_branch": self.git_branch,
+            "git_status": self.git_status,
+            "git_diff": self.git_diff,
+            "files_changed": list(self.files_changed),
+            "metadata": deepcopy(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class TaskCheckpoint:
+    id: str
+    task_id: str
+    timestamp: str
+    label: str
+    description: str | None = None
+    git_branch: str | None = None
+    git_status: str | None = None
+    git_diff: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_task(
+        cls,
+        task: "Task",
+        *,
+        label: str,
+        description: str | None = None,
+        git_branch: str | None = None,
+        git_status: str | None = None,
+        git_diff: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
+    ) -> "TaskCheckpoint":
+        return cls(
+            id=uuid4().hex,
+            task_id=task.id,
+            timestamp=(timestamp or task._now()).isoformat(),
+            label=label,
+            description=description,
+            git_branch=git_branch,
+            git_status=git_status,
+            git_diff=git_diff,
+            metadata=deepcopy(metadata or {}),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "task_id": self.task_id,
+            "timestamp": self.timestamp,
+            "label": self.label,
+            "description": self.description,
+            "git_branch": self.git_branch,
+            "git_status": self.git_status,
+            "git_diff": self.git_diff,
+            "metadata": deepcopy(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class TaskCheckpointComparison:
+    checkpoint_a_id: str
+    checkpoint_a_label: str
+    checkpoint_a_timestamp: str
+    checkpoint_b_id: str
+    checkpoint_b_label: str
+    checkpoint_b_timestamp: str
+    diff_a: str | None
+    diff_b: str | None
+    changed_files_a: tuple[str, ...] = ()
+    changed_files_b: tuple[str, ...] = ()
+    files_added: tuple[str, ...] = ()
+    files_removed: tuple[str, ...] = ()
+    files_changed: tuple[str, ...] = ()
+
+    @classmethod
+    def from_checkpoints(
+        cls,
+        checkpoint_a: TaskCheckpoint,
+        checkpoint_b: TaskCheckpoint,
+    ) -> "TaskCheckpointComparison":
+        changed_a = _changed_files_from_checkpoint(checkpoint_a)
+        changed_b = _changed_files_from_checkpoint(checkpoint_b)
+        files_a = set(changed_a)
+        files_b = set(changed_b)
+        return cls(
+            checkpoint_a_id=checkpoint_a.id,
+            checkpoint_a_label=checkpoint_a.label,
+            checkpoint_a_timestamp=checkpoint_a.timestamp,
+            checkpoint_b_id=checkpoint_b.id,
+            checkpoint_b_label=checkpoint_b.label,
+            checkpoint_b_timestamp=checkpoint_b.timestamp,
+            diff_a=checkpoint_a.git_diff,
+            diff_b=checkpoint_b.git_diff,
+            changed_files_a=changed_a,
+            changed_files_b=changed_b,
+            files_added=tuple(sorted(files_b - files_a)),
+            files_removed=tuple(sorted(files_a - files_b)),
+            files_changed=tuple(sorted(files_a & files_b)),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "checkpoint_a": {
+                "id": self.checkpoint_a_id,
+                "label": self.checkpoint_a_label,
+                "timestamp": self.checkpoint_a_timestamp,
+            },
+            "checkpoint_b": {
+                "id": self.checkpoint_b_id,
+                "label": self.checkpoint_b_label,
+                "timestamp": self.checkpoint_b_timestamp,
+            },
+            "diff_a": self.diff_a,
+            "diff_b": self.diff_b,
+            "changed_files_a": list(self.changed_files_a),
+            "changed_files_b": list(self.changed_files_b),
+            "files_added": list(self.files_added),
+            "files_removed": list(self.files_removed),
+            "files_changed": list(self.files_changed),
+        }
+
+
+@dataclass(frozen=True)
+class TaskCheckpointRestorePlan:
+    target_checkpoint_id: str
+    target_checkpoint_label: str
+    target_checkpoint_timestamp: str
+    current_git_status: str | None
+    current_git_diff: str | None
+    checkpoint_diff: str | None
+    files_would_be_modified: tuple[str, ...] = ()
+    files_would_be_overwritten: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    safe_to_restore: bool = False
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        checkpoint: TaskCheckpoint,
+        *,
+        current_git_status: str | None = None,
+        current_git_diff: str | None = None,
+    ) -> "TaskCheckpointRestorePlan":
+        checkpoint_files = set(_changed_files_from_checkpoint(checkpoint))
+        current_files = set(_changed_files_from_status(current_git_status or ""))
+        current_files.update(_changed_files_from_diff(current_git_diff or ""))
+        overwritten = tuple(sorted(checkpoint_files & current_files))
+        warnings = _restore_warnings(
+            checkpoint_files=checkpoint_files,
+            overwritten=overwritten,
+            has_checkpoint_diff=bool(checkpoint.git_diff),
+            has_current_state=current_git_status is not None and current_git_diff is not None,
+            has_snapshots=_has_file_snapshots(checkpoint),
+        )
+        return cls(
+            target_checkpoint_id=checkpoint.id,
+            target_checkpoint_label=checkpoint.label,
+            target_checkpoint_timestamp=checkpoint.timestamp,
+            current_git_status=current_git_status,
+            current_git_diff=current_git_diff,
+            checkpoint_diff=checkpoint.git_diff,
+            files_would_be_modified=tuple(sorted(checkpoint_files)),
+            files_would_be_overwritten=overwritten,
+            warnings=warnings,
+            safe_to_restore=not warnings,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "target_checkpoint": {
+                "id": self.target_checkpoint_id,
+                "label": self.target_checkpoint_label,
+                "timestamp": self.target_checkpoint_timestamp,
+            },
+            "current_git_status": self.current_git_status,
+            "current_git_diff": self.current_git_diff,
+            "checkpoint_diff": self.checkpoint_diff,
+            "files_would_be_modified": list(self.files_would_be_modified),
+            "files_would_be_overwritten": list(self.files_would_be_overwritten),
+            "warnings": list(self.warnings),
+            "safe_to_restore": self.safe_to_restore,
+        }
+
+
+@dataclass(frozen=True)
+class TaskCheckpointRestoreResult:
+    target_checkpoint_id: str
+    target_checkpoint_label: str
+    restored_files: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    forced: bool = False
+    safe_plan: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "target_checkpoint": {
+                "id": self.target_checkpoint_id,
+                "label": self.target_checkpoint_label,
+            },
+            "restored_files": list(self.restored_files),
+            "warnings": list(self.warnings),
+            "forced": self.forced,
+            "safe_plan": self.safe_plan,
+        }
+
+
+@dataclass
+class Task:
+    title: str
+    description: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: uuid4().hex)
+    status: TaskStatus = TaskStatus.CREATED
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    failed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    failure_reason: str | None = None
+    cancellation_requested: bool = False
+    cancellation_requested_at: datetime | None = None
+    cancellation_reason: str | None = None
+    _checkpoints: list[TaskCheckpoint] = field(default_factory=list, repr=False)
+    _on_event: Callable[["Task", str], None] | None = field(default=None, repr=False, compare=False)
+    _reporter: Callable[["Task"], TaskReport] | None = field(default=None, repr=False, compare=False)
+    _checkpoint_builder: Callable[
+        ["Task", str, str | None, dict[str, Any] | None],
+        TaskCheckpoint,
+    ] | None = field(default=None, repr=False, compare=False)
+    _restore_plan_builder: Callable[
+        ["Task", TaskCheckpoint],
+        TaskCheckpointRestorePlan,
+    ] | None = field(default=None, repr=False, compare=False)
+    _restore_executor: Callable[
+        ["Task", TaskCheckpoint, TaskCheckpointRestorePlan, bool],
+        TaskCheckpointRestoreResult,
+    ] | None = field(default=None, repr=False, compare=False)
+
+    def start(self) -> None:
+        self._require_status({TaskStatus.CREATED})
+        now = self._now()
+        self.status = TaskStatus.RUNNING
+        self.started_at = now
+        self.updated_at = now
+        self._emit("task_started")
+
+    def complete(self) -> None:
+        self._require_status({TaskStatus.CREATED, TaskStatus.RUNNING})
+        now = self._now()
+        self.status = TaskStatus.COMPLETED
+        self.completed_at = now
+        self.updated_at = now
+        self._emit("task_completed")
+
+    def fail(self, reason: str) -> None:
+        self._require_status({TaskStatus.CREATED, TaskStatus.RUNNING})
+        if not reason.strip():
+            raise ValueError("failure reason must not be empty")
+        now = self._now()
+        self.status = TaskStatus.FAILED
+        self.failure_reason = reason
+        self.failed_at = now
+        self.updated_at = now
+        self._emit("task_failed")
+
+    def request_cancellation(self, reason: str = "cancel requested") -> None:
+        if self.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            return
+        now = self._now()
+        self.cancellation_requested = True
+        self.cancellation_requested_at = now
+        self.cancellation_reason = reason
+        self.updated_at = now
+
+    def cancel(self, reason: str | None = None) -> None:
+        self._require_status({TaskStatus.CREATED, TaskStatus.RUNNING})
+        now = self._now()
+        self.status = TaskStatus.CANCELLED
+        self.cancelled_at = now
+        if reason is not None:
+            self.cancellation_reason = reason
+        self.cancellation_requested = True
+        if self.cancellation_requested_at is None:
+            self.cancellation_requested_at = now
+        self.updated_at = now
+        self._emit("task_cancelled")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "started_at": None if self.started_at is None else self.started_at.isoformat(),
+            "completed_at": None if self.completed_at is None else self.completed_at.isoformat(),
+            "failed_at": None if self.failed_at is None else self.failed_at.isoformat(),
+            "cancelled_at": None if self.cancelled_at is None else self.cancelled_at.isoformat(),
+            "failure_reason": self.failure_reason,
+            "cancellation_requested": self.cancellation_requested,
+            "cancellation_requested_at": (
+                None if self.cancellation_requested_at is None else self.cancellation_requested_at.isoformat()
+            ),
+            "cancellation_reason": self.cancellation_reason,
+            "metadata": deepcopy(self.metadata),
+            "checkpoints": [checkpoint.as_dict() for checkpoint in self._checkpoints],
+        }
+
+    def report(self) -> TaskReport:
+        if self._reporter is not None:
+            return self._reporter(self)
+        return TaskReport.from_task(self)
+
+    def create_checkpoint(
+        self,
+        label: str,
+        description: str | None = None,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> TaskCheckpoint:
+        if not label.strip():
+            raise ValueError("checkpoint label must not be empty")
+        checkpoint = self._build_checkpoint(label, description, metadata)
+        self._checkpoints.append(checkpoint)
+        self.updated_at = datetime.fromisoformat(checkpoint.timestamp)
+        return checkpoint
+
+    def checkpoints(self) -> list[TaskCheckpoint]:
+        return list(self._checkpoints)
+
+    def latest_checkpoint(self) -> TaskCheckpoint | None:
+        if not self._checkpoints:
+            return None
+        return self._checkpoints[-1]
+
+    def compare_checkpoints(
+        self,
+        checkpoint_a: TaskCheckpoint | str,
+        checkpoint_b: TaskCheckpoint | str,
+    ) -> TaskCheckpointComparison:
+        return TaskCheckpointComparison.from_checkpoints(
+            self._resolve_checkpoint(checkpoint_a),
+            self._resolve_checkpoint(checkpoint_b),
+        )
+
+    def compare_latest_checkpoint(self) -> TaskCheckpointComparison:
+        if len(self._checkpoints) < 2:
+            raise ValueError("at least two checkpoints are required")
+        return self.compare_checkpoints(self._checkpoints[-2], self._checkpoints[-1])
+
+    def plan_restore_checkpoint(self, checkpoint: TaskCheckpoint | str) -> TaskCheckpointRestorePlan:
+        resolved = self._resolve_checkpoint(checkpoint)
+        if self._restore_plan_builder is not None:
+            return self._restore_plan_builder(self, resolved)
+        return TaskCheckpointRestorePlan.from_checkpoint(resolved)
+
+    def restore_checkpoint(
+        self,
+        checkpoint: TaskCheckpoint | str,
+        *,
+        force: bool = False,
+    ) -> TaskCheckpointRestoreResult:
+        resolved = self._resolve_checkpoint(checkpoint)
+        plan = self.plan_restore_checkpoint(resolved)
+        if not plan.safe_to_restore and not force:
+            raise ValueError("restore plan is not safe; pass force=True to override")
+        if self._restore_executor is None:
+            raise RuntimeError("checkpoint restore requires a workspace-bound task")
+        return self._restore_executor(self, resolved, plan, force)
+
+    def _require_status(self, allowed: set[TaskStatus]) -> None:
+        if self.status not in allowed:
+            allowed_values = ", ".join(sorted(status.value for status in allowed))
+            raise ValueError(f"cannot transition task from {self.status.value}; expected one of: {allowed_values}")
+
+    def _resolve_checkpoint(self, checkpoint: TaskCheckpoint | str) -> TaskCheckpoint:
+        if isinstance(checkpoint, TaskCheckpoint):
+            if checkpoint.task_id != self.id:
+                raise ValueError("checkpoint belongs to a different task")
+            return checkpoint
+        for existing in self._checkpoints:
+            if existing.id == checkpoint:
+                return existing
+        raise ValueError(f"unknown checkpoint id: {checkpoint}")
+
+    def _build_checkpoint(
+        self,
+        label: str,
+        description: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> TaskCheckpoint:
+        if self._checkpoint_builder is not None:
+            return self._checkpoint_builder(self, label, description, metadata)
+        return TaskCheckpoint.from_task(self, label=label, description=description, metadata=metadata)
+
+    def _emit(self, event_type: str) -> None:
+        if self._on_event is not None:
+            self._on_event(self, event_type)
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+
+def _changed_files_from_checkpoint(checkpoint: TaskCheckpoint) -> tuple[str, ...]:
+    files = set(_changed_files_from_status(checkpoint.git_status or ""))
+    files.update(_changed_files_from_diff(checkpoint.git_diff or ""))
+    return tuple(sorted(files))
+
+
+def _changed_files_from_status(status: str) -> tuple[str, ...]:
+    files: list[str] = []
+    for line in status.splitlines():
+        if not line:
+            continue
+        path = line[3:] if len(line) > 3 else line
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path:
+            files.append(path.strip())
+    return tuple(files)
+
+
+def _changed_files_from_diff(diff: str) -> tuple[str, ...]:
+    files: list[str] = []
+    for line in diff.splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        path = parts[3]
+        if path.startswith("b/"):
+            path = path[2:]
+        files.append(path)
+    return tuple(files)
+
+
+def _restore_warnings(
+    *,
+    checkpoint_files: set[str],
+    overwritten: tuple[str, ...],
+    has_checkpoint_diff: bool,
+    has_current_state: bool,
+    has_snapshots: bool,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if not has_current_state:
+        warnings.append("current git state is unavailable")
+    if not has_checkpoint_diff:
+        warnings.append("target checkpoint has no diff")
+    if not has_snapshots:
+        warnings.append("target checkpoint has no restorable file snapshots")
+    if not checkpoint_files:
+        warnings.append("target checkpoint does not reference changed files")
+    if overwritten:
+        warnings.append("restore would overwrite current changes in: " + ", ".join(overwritten))
+    return tuple(warnings)
+
+
+def _has_file_snapshots(checkpoint: TaskCheckpoint) -> bool:
+    snapshots = checkpoint.metadata.get("_file_snapshots")
+    return isinstance(snapshots, dict) and bool(snapshots)

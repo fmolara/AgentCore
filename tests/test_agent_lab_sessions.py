@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterator
 
-from a100_agent_lab.api.client import AgentLab
-from a100_agent_lab.generation.result import GenerationMetrics, GenerationResult
-from a100_agent_lab.runtime.base import Runtime
-from a100_agent_lab.sessions import Session, SessionStore
+from agentcore_server.api.client import AgentLab
+from agentcore_server.generation.result import GenerationMetrics, GenerationResult
+from agentcore_server.runtime.base import Runtime
+from agentcore_server.sessions import Session, SessionStore
 
 
 class FakeRuntime(Runtime):

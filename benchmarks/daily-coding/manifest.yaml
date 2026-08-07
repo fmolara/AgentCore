@@ -1,0 +1,337 @@
+schema_version: 1
+suite: agentcore-daily-coding-v1
+description: >-
+  Ten small, deterministic coding tasks for the shared native ToolLoopAgent.
+  Fixtures are materialized outside the AgentCore repository; source and
+  reference patches are never included in model transcripts.
+qwen_baseline_subset: [C01, C02, C04, C05, C08]
+common_policy:
+  build_check: build
+  test_check: test
+  require_git_diff: true
+  automatic_commit: false
+tasks:
+  - id: C01
+    category: localized-c-bug
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: medium
+    primary_files: [src/url.c, tests/test_main.c]
+    prompt: |-
+      Fix the URL percent decoder so incomplete escape sequences at the end of
+      an input, including "%" and "%A", are rejected without reading beyond
+      the terminating null byte. Preserve valid upper- and lowercase hex
+      decoding and existing buffer-size behavior. Add focused regression tests
+      for incomplete escapes and normal encoded input. Keep the public API
+      unchanged and avoid unrelated changes.
+
+      Inspect the implementation and tests before editing.
+      Run the configured build check and the configured test check.
+      Inspect Git diff after the final changes. Do not create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - incomplete percent escapes are rejected without out-of-bounds access
+      - valid lowercase and uppercase escapes remain accepted
+      - focused tests cover percent, one-digit, and valid escape cases
+      - ASan and UBSan pass
+    reference_patch: false
+
+  - id: C02
+    category: multi-file-c-feature
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: medium
+    primary_files: [src/config.c, include/cutil/config.h, tests/test_main.c]
+    prompt: |-
+      Extend config_parse_line to support double-quoted values. A quoted value
+      may contain spaces, an escaped double quote (\"), or an escaped
+      backslash (\\). Strip the surrounding quotes and decode those two escape
+      forms. Reject an unterminated quote, an unsupported escape, or any
+      non-whitespace characters after the closing quote. Preserve current
+      behavior for unquoted values, empty values, key trimming, and output
+      buffer limits. Keep the public function signature unchanged.
+
+      Add focused tests for quoted values, escapes, malformed quotes, and
+      buffer limits. Inspect existing code first.
+      Run the configured build check and the configured test check.
+      Inspect Git diff. Do not create a Git commit or change unrelated modules.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - quoted values and the two supported escapes decode correctly
+      - malformed quoting and insufficient output buffers are rejected
+      - unquoted behavior is preserved
+      - implementation and tests are complete and memory-safe
+    reference_patch: false
+
+  - id: C03
+    category: c-error-handling
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: 3f716321476df1645e835ef53afe20c8f9f3d20a
+    initial_test_status: fail
+    risk: low
+    primary_files: [src/csv.c, tests/test_main.c]
+    prompt: |-
+      The CSV row parser currently continues after the field callback reports
+      failure. Correct the error propagation so parsing stops immediately and
+      returns failure, while successful callbacks and empty fields retain their
+      current behavior. The existing regression test demonstrates the failure;
+      add any additional focused assertion needed to prevent processing fields
+      after the rejected one. Keep the callback and parser APIs unchanged.
+
+      Reproduce the failing configured test check and inspect the implementation.
+      Make the smallest correction. Run the configured build check and the configured test check.
+      Inspect Git diff. Do not create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - callback failure stops parsing at that field
+      - later fields are not delivered
+      - successful and empty-field rows still work
+      - initially failing test passes
+    reference_patch: false
+
+  - id: C04
+    category: cmake-build-system
+    language: CMake/C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: low
+    primary_files: [CMakeLists.txt, Makefile, README.md]
+    prompt: |-
+      Add a CMake option named CUTIL_WARNINGS_AS_ERRORS, defaulting to OFF.
+      When enabled on GCC or Clang, both the cutil library and cutil_tests must
+      compile with warnings treated as errors. Do not add unsupported flags for
+      other compilers. Add a Makefile target named werror that configures a
+      separate build-werror directory with the option enabled, builds it, and
+      runs its CTest suite. Document the option and target briefly in README.
+
+      Preserve the normal build.
+      Run the configured build check, the configured test check, and the configured werror check.
+      Inspect Git diff. Do not create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+      werror: [make, werror]
+    acceptance:
+      - option defaults off and is compiler-gated
+      - both targets receive the flag when enabled
+      - isolated werror target configures, builds, and tests successfully
+      - documentation is accurate
+    reference_patch: false
+
+  - id: C05
+    category: regression-test-addition
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: low
+    primary_files: [src/path.c, tests/test_main.c]
+    prompt: |-
+      Add regression coverage for path_join without changing its public API.
+      Cover empty left and right components, a slash already present on either
+      boundary, both boundaries containing a slash, exact-fit output, and an
+      output buffer that is one byte too small. Expected results must not
+      contain an accidental doubled slash at the join boundary. If the tests
+      expose a real implementation defect, fix it with a localized change;
+      otherwise leave implementation code unchanged.
+
+      Inspect the implementation before writing tests.
+      Run the configured build check and the configured test check.
+      Inspect Git diff. Do not create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - all listed boundary combinations have meaningful assertions
+      - exact-fit and undersized buffers are distinguished
+      - tests do not weaken existing assertions
+      - implementation changes occur only if tests prove them necessary
+    reference_patch: false
+
+  - id: C06
+    category: behavior-preserving-refactor
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: medium
+    primary_files: [src/url.c, src/date.c, CMakeLists.txt, tests/test_main.c]
+    prompt: |-
+      Refactor the duplicate ASCII digit conversion logic used by the URL and
+      date parsers into one small internal helper module. The helper must handle
+      decimal digits and hexadecimal A-F/a-f without locale dependence. Keep it
+      internal rather than adding a public installed API. Update both parsers to
+      use it while preserving all existing behavior. Add focused tests showing
+      decimal date digits and mixed-case URL hex still work and malformed
+      characters remain rejected.
+
+      Keep the change narrow and update the build definition for any new source.
+      Run the configured build check and the configured test check.
+      Inspect Git diff. Do not create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - one internal helper is shared by both parsers
+      - no new public API is introduced
+      - locale-independent behavior is preserved
+      - CMake and tests include the refactor correctly
+    reference_patch: false
+
+  - id: C07
+    category: parser-data-validation
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: medium
+    primary_files: [src/date.c, tests/test_main.c]
+    prompt: |-
+      Strengthen date_parse_iso8601 so it validates real Gregorian calendar
+      dates rather than only month 1-12 and day 1-31. Enforce each month's day
+      count and leap years: divisible by 4, except centuries not divisible by
+      400. Preserve the exact YYYY-MM-DD syntax and public API.
+
+      Add focused tests for 30-day months, February, leap years 2000 and 2024,
+      non-leap years 1900 and 2023, zero components, and trailing input.
+      Run the configured build check and the configured test check.
+      Inspect Git diff. Do not create a Git commit or change unrelated parsers.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - Gregorian month lengths and leap-year rules are correct
+      - syntax and API remain unchanged
+      - tests cover both accepted and rejected boundaries
+      - no undefined behavior is introduced
+    reference_patch: false
+
+  - id: C08
+    category: failing-test-recovery
+    language: C
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: ebc2de79978e401291495394d5072d75428bca72
+    initial_test_status: fail
+    risk: low
+    primary_files: [src/config.c, tests/test_main.c]
+    prompt: |-
+      The configuration parser incorrectly accepts a key that becomes empty
+      after whitespace trimming. Reproduce the existing failing test, then make
+      config_parse_line reject empty trimmed keys while preserving empty values,
+      normal key/value trimming, and buffer-limit behavior. Add a focused case
+      showing that a non-empty key with an empty value remains valid.
+
+      Run the configured build check and the configured test check after the correction.
+      Inspect Git diff. Keep the public API unchanged and do not create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - whitespace-only keys are rejected
+      - empty values with non-empty keys are accepted
+      - initially failing test passes
+      - existing parsing behavior remains green
+    reference_patch: false
+
+  - id: P09
+    category: python-tooling-feature
+    language: Python
+    source:
+      kind: controlled
+      repository: agentcore-daily-fixtures
+      license: MIT
+    baseline: d0c08be2720748b54d89a1c86d05b2ebd78474e5
+    initial_test_status: pass
+    risk: medium
+    primary_files: [tools/log_summary.py, tests/test_log_summary.py, README.md]
+    prompt: |-
+      Extend tools/log_summary.py with a --strict option. By default, malformed
+      non-empty JSON lines must be skipped, a concise warning with the 1-based
+      line number must be written to stderr, and valid records must still be
+      summarized. With --strict, the first malformed line must produce a concise
+      stderr error and exit status 2 without printing a partial JSON summary.
+      Blank lines remain ignored. Preserve file and stdin input.
+
+      Add unit and CLI tests for default recovery, strict failure, line numbers,
+      blank lines, and valid input. Update README usage briefly.
+      Run the configured build check and the configured test check.
+      Inspect Git diff. Do not create a Git commit.
+    checks:
+      build: [python3, -m, py_compile, tools/log_summary.py]
+      test: [python3, -m, unittest, discover, -s, tests, -p, "test_*.py"]
+    acceptance:
+      - default mode skips malformed records with line-numbered warnings
+      - strict mode exits 2 and emits no partial summary
+      - stdin and file paths both work
+      - tests cover API and CLI behavior
+    reference_patch: false
+
+  - id: H10
+    category: historical-public-bug
+    language: C
+    source:
+      kind: historical-public
+      repository: https://github.com/benhoyt/inih
+      license: BSD-3-Clause
+      upstream_parent: 26254ee
+      upstream_fix: 8e06f6b77b5d4471bdc6d85ada81b67d37354a5c
+    baseline: b2ed2ddc76592804037b63b514de8060f906be32
+    initial_test_status: fail
+    risk: high
+    primary_files: [ini.c, benchmark/test_empty_discard.c]
+    prompt: |-
+      Fix the sanitizer failure in ini_parse_stream when it discards the
+      remainder of an overlong line and the reader returns a non-null empty
+      chunk. The parser must not index before the start of its discard buffer,
+      and normal newline termination behavior must remain unchanged. The
+      included regression harness reproduces the failure.
+
+      Inspect the parser and harness and reproduce the configured failing test check.
+      Make the smallest safe correction. Run the configured build check and the configured test check.
+      Inspect Git diff. Do not expose or depend on external patches, change public APIs,
+      or create a Git commit.
+    checks:
+      build: [make, build]
+      test: [make, test]
+    acceptance:
+      - empty discard chunks cannot cause an out-of-bounds read
+      - newline detection still terminates discard correctly
+      - strict build and sanitizer harness pass
+      - change is localized and consistent with upstream style
+    reference_patch: true
