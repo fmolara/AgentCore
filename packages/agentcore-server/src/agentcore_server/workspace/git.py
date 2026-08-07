@@ -47,7 +47,51 @@ class GitWorkspace:
         args = ["diff", "--"]
         if path is not None:
             args.append(self._relative_path(path))
-        return self._run(args)
+        tracked = self._run(args)
+        untracked = self._untracked_file_diffs(path)
+        if not untracked:
+            return tracked
+        return GitResult(
+            command=tracked.command,
+            returncode=tracked.returncode,
+            stdout=tracked.stdout + "".join(untracked),
+            stderr=tracked.stderr,
+        )
+
+    def _untracked_file_diffs(self, path: str | Path | None) -> list[str]:
+        status_args = [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=normal",
+            "--",
+        ]
+        if path is not None:
+            status_args.append(self._relative_path(path))
+        status = self._run(status_args)
+        diffs: list[str] = []
+        for entry in status.stdout.split("\0"):
+            if not entry.startswith("?? "):
+                continue
+            relative = entry[3:]
+            # Git condenses untracked directories. Check/build artifacts in those
+            # directories are not workspace edits and should not flood the diff.
+            if not relative or relative.endswith("/"):
+                continue
+            resolved = self.workspace._resolve(relative)
+            if not resolved.is_file():
+                continue
+            result = self._run(
+                ["diff", "--no-index", "--", "/dev/null", relative],
+                check=False,
+            )
+            if result.returncode not in {0, 1}:
+                raise RuntimeError(
+                    f"git command failed ({result.returncode}): "
+                    f"{' '.join(result.command)}\n{result.stderr}"
+                )
+            diffs.append(result.stdout)
+        return diffs
 
     def add(self, paths: str | Path | Sequence[str | Path]) -> GitResult:
         self.workspace._require_writable()
