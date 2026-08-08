@@ -4,7 +4,7 @@ AgentCore is runtime-independent at the application layer. Runtime adapters are
 allowed to contain backend-specific lifecycle and protocol details, but user
 code should not need to change when switching backends through configuration.
 
-Current model used for validation:
+Current default model used for daily local operation:
 
 - `models/Qwen3.6-27B`
 - NVIDIA A100 80GB PCIe
@@ -17,7 +17,8 @@ Numbers below are local reference measurements, not universal claims.
 
 | Runtime | Role | Maturity | Typical Generation |
 | --- | --- | --- | --- |
-| SGLang | Recommended production backend | High | ~27-28 tokens/s |
+| SGLang | Default Qwen native-tool backend | High | ~28-37 tokens/s in recent tool turns |
+| vLLM | Optional gpt-oss/Harmony backend | Experimental | ~33-53 tokens/s in recent short tool turns |
 | LMDeploy | Secondary production backend | Good | ~28 tokens/s |
 | Transformers | Reference backend | Stable but slower | ~15 tokens/s |
 
@@ -135,17 +136,26 @@ Operational notes:
   and last error;
 - useful as a production-capable alternate backend.
 
-## Why SGLang Is Recommended Today
+## vLLM And Harmony
 
-SGLang is the current recommended production backend because it provides the
-best balance of:
+vLLM is the verified runtime for the optional gpt-oss-120b strong profile. It
+uses the Harmony adapter, keeps reasoning content out of visible assistant text
+and public traces, and presents the same AgentCore tools and approval boundary
+as Qwen. On the current A100, a 32K gpt-oss runtime uses roughly 75 GiB and is
+therefore effectively exclusive. It is not the default interactive profile.
+
+## Why SGLang Is The Daily Default
+
+SGLang with Qwen3.6 is the current default local coding profile because it
+provides the best balance of:
 
 - production-oriented serving model;
 - strong throughput;
 - low warm TTFT;
 - stable OpenAI-compatible interface;
 - manageable operational complexity;
-- alignment with persistent coding-agent/server use.
+- lower VRAM than gpt-oss and alignment with persistent coding-agent use.
 
-LMDeploy remains important as the secondary backend. Transformers remains the
-reference backend. Future decisions should continue to be measurement-driven.
+gpt-oss/vLLM remains the explicit strong experimental option. LMDeploy remains
+important as a secondary backend, and Transformers remains the reference.
+Future decisions should continue to be measurement-driven.

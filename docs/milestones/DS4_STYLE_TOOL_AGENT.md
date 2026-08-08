@@ -57,11 +57,10 @@ The frozen ten-task daily-coding suite covered C bugs and features, error
 handling, CMake, test generation, refactoring, validation, failed-check
 recovery, Python tooling, and a historical public defect.
 
-- **gpt-oss-120b:** 9/10 tasks on the full suite; primary experimental model
-  for controlled daily coding trials and the strong local candidate for broad
-  or reasoning-heavy work.
-- **Qwen3.6-27B:** 5/5 tasks on a preselected representative subset; fast,
-  lower-latency fallback.
+- **Qwen3.6-27B:** 5/5 tasks on a preselected representative subset; default
+  fast local model for interactive daily coding.
+- **gpt-oss-120b:** 9/10 tasks on the full suite; optional strong experimental
+  profile for broad or reasoning-heavy work.
 - **Qwen3-Coder-30B-A3B-Instruct:** evaluated but not qualified as a primary
   model.
 - **Devstral Small 2 24B:** evaluated but not qualified as a primary model.
@@ -81,6 +80,10 @@ fixtures, and qualification artifacts are not committed.
 Use `agentcore-local --agent tool-loop` with an ignored deployment config.
 Public strong and fast examples are `config/vllm-harmony-tools.yaml` and
 `config/sglang-qwen-tools.yaml`.
+
+Daily operation uses two static profiles, not automatic model routing. The
+tool-loop default is `fast`; `--profile strong` is an explicit operator choice.
+See [`docs/operations/DAILY_USE.md`](../operations/DAILY_USE.md).
 
 ## Known Limitations
 

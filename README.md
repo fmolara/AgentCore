@@ -230,10 +230,28 @@ call displays its complete AgentCore-generated effect and requires a unique
 approval tied to the call ID and preview digest. `qwen-tools` remains a CLI
 compatibility alias.
 
-Use `config/vllm-harmony-tools.yaml` as the public starting point for the
-strong gpt-oss/Harmony profile and `config/sglang-qwen-tools.yaml` for the fast
-Qwen/SGLang profile. Adjust model paths, runtime executables, ports, and context
-capacity in an ignored local configuration; the checked-in files are examples.
+For normal daily use, install the two explicit local profiles and run Qwen by
+default:
+
+```bash
+agentcore-local \
+  --agent tool-loop \
+  --workspace workspace/project \
+  --prompt-file task.txt
+
+agentcore-local \
+  --agent tool-loop \
+  --profile strong \
+  --workspace workspace/project \
+  --prompt-file task.txt
+```
+
+`fast` is the implicit tool-loop profile and selects Qwen3.6/SGLang. `strong`
+selects gpt-oss/vLLM/Harmony explicitly. Public profile starting points are
+`config/sglang-qwen-tools.yaml` and `config/vllm-harmony-tools.yaml`; actual
+model paths and runtime executables belong in ignored local profile files.
+Configured local runs automatically retain an ordered trace and append one
+privacy-bounded aggregate metrics record after each terminal task.
 
 The legacy planner remains available explicitly:
 
@@ -260,11 +278,11 @@ documents the legacy planner mode.
 
 ## Model Positioning
 
-- **gpt-oss-120b:** primary experimental model for controlled daily coding
-  trials, using the verified vLLM/Harmony path. It is the stronger local choice
-  for broad or reasoning-heavy work, but is not production-proven.
-- **Qwen3.6-27B:** fast, lower-latency fallback using SGLang and the native
-  Qwen tool parser.
+- **Qwen3.6-27B:** default fast local coding model using SGLang and the native
+  Qwen tool parser. It is the normal choice for interactive daily work.
+- **gpt-oss-120b:** optional strong experimental profile for controlled,
+  broader, or reasoning-heavy tasks using vLLM/Harmony. It is not
+  production-proven and has materially higher latency and VRAM use.
 - **Qwen3-Coder-30B-A3B-Instruct and Devstral Small 2 24B:** evaluated
   experimental options, not primary recommendations.
 
@@ -327,6 +345,7 @@ Current architecture documents:
 - [Native Tool Agent](docs/architecture/QWEN_TOOL_AGENT.md)
 - [Native Tool Protocols](docs/architecture/NATIVE_TOOL_PROTOCOLS.md)
 - [DS4-Style Tool Agent Milestone](docs/milestones/DS4_STYLE_TOOL_AGENT.md)
+- [Daily Local Operation](docs/operations/DAILY_USE.md)
 - [Planner v2 (legacy compatibility)](docs/architecture/PLANNER_V2.md)
 - [Task Workflow](docs/architecture/TASK_WORKFLOW.md)
 - [HTTP API](docs/architecture/HTTP_API.md)

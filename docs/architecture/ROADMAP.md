@@ -36,31 +36,28 @@ Milestone 2 is the architectural baseline for coding workspace workflows. It
 remains non-autonomous: proposals require review and mutating plans require
 explicit approval.
 
-## Milestone 3: Autonomous Coding Agent
+## Milestone 3: Incremental Coding Agent
 
-Status: PLANNED
-
-Goal:
-
-- evolve from reviewable execution toward controlled autonomous coding work.
-
-High-level areas:
-
-- planner improvements;
-- long-running tasks;
-- tool registry;
-- memory;
-- workspace reasoning;
-- multi-agent collaboration.
-
-No implementation sequence is defined here.
-
-## Milestone 4: Coding Agent
+Status: COMPLETE
 
 Goal:
 
-- combine runtime, sessions, tools, planning, and memory into a practical
-  coding-agent workflow;
-- support code inspection, edits, tests, and Git-aware review flows;
-- provide safe defaults for persistent developer use;
-- preserve runtime independence where possible.
+- provide a persistent native `ToolLoopAgent` over Qwen, Mistral, and Harmony;
+- expose bounded workspace discovery and exact localized edits;
+- bind complete effect previews to per-call approval;
+- return failures and check results to the model for bounded recovery;
+- retain legacy planner behavior for compatibility.
+
+The normal architecture is native incremental tool use, not complete up-front
+ActionPlan generation. Distributed ToolLoopAgent exposure remains deferred.
+
+## Milestone 4: Daily Local Operation
+
+Status: ACTIVE
+
+Goal:
+
+- use Qwen3.6/SGLang as the fast default local profile;
+- retain gpt-oss/vLLM/Harmony as the optional strong experimental profile;
+- collect privacy-bounded passive task metrics and complete traces;
+- validate daily work while retaining explicit human approval.

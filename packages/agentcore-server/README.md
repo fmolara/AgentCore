@@ -5,8 +5,11 @@
 - `AgentLab`, `Agent`, `Session`;
 - managed workspaces, safe file editing, and local Git helpers;
 - tasks, reports, checkpoints, restore planning, and restore execution;
-- action plans, approval policies, plan proposals, and task execution;
-- runtime adapters for Transformers, SGLang, and LMDeploy;
+- incremental native `ToolLoopAgent` orchestration with Qwen, Mistral, and
+  Harmony protocol adapters;
+- complete per-call approval previews, exact edits, and symbolic checks;
+- legacy action plans, approval policies, plan proposals, and task execution;
+- runtime adapters for Transformers, SGLang, vLLM, and LMDeploy;
 - FastAPI HTTP API and Server-Sent Events;
 - structured logging and runtime health/statistics.
 
@@ -58,11 +61,21 @@ agentcore-local \
   --workspace workspace/project
 ```
 
-Local mode reuses the server package's domain, planner, approval, executor,
-workspace, and runtime implementations. It does not start FastAPI, use HTTP or
-SSE, import `agentclient`, or start an AgentCore server subprocess.
+The recommended local workflow is the native tool loop. With an installed
+`fast` profile it defaults to Qwen3.6/SGLang; `strong` selects
+gpt-oss/vLLM/Harmony explicitly:
 
-For a proposal-only diagnostic run:
+```bash
+agentcore-local --agent tool-loop --workspace workspace/project
+agentcore-local --agent tool-loop --profile strong --workspace workspace/project
+```
+
+Local mode reuses the server package's domain, approval, workspace, and runtime
+implementations. It does not start FastAPI, use HTTP or SSE, or import
+`agentclient`. The legacy planner/executor path remains available only with an
+explicit configuration.
+
+For a legacy proposal-only diagnostic run:
 
 ```bash
 agentcore-local \

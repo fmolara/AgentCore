@@ -68,6 +68,19 @@ python -m agentcore_server.local \
   --workspace workspace/project
 ```
 
+When local profiles are installed, `--config` can be omitted. Native tool-loop
+mode defaults to the `fast` Qwen profile; the strong profile is always selected
+explicitly:
+
+```bash
+agentcore-local --agent tool-loop --workspace workspace/project
+agentcore-local --agent tool-loop --profile strong --workspace workspace/project
+```
+
+Profiles are resolved from `AGENTCORE_PROFILE_DIR`, then
+`~/.config/agentcore/profiles`, then `config/local` under the current project.
+Legacy planner mode still requires an explicit `--config`.
+
 Tool-agent commands are:
 
 ```text
@@ -117,6 +130,14 @@ port, context capacity, and trusted checks. The current starting points are:
 
 Machine-specific paths and trusted check environment values must not be added
 to public examples.
+
+The public examples also configure `logging.trace_path` and
+`logging.metrics_path`. If no `--trace-file` is supplied, local tool-loop mode
+creates a unique trace in `trace_path`. At terminal completion it appends one
+aggregate metrics record containing model/profile identity, status, turns,
+tool/check/approval counts, token totals, first-token latency, generation and
+wall time, changed files, and trace location. It contains no prompts, tool
+arguments, source text, diffs, process environment, or hidden reasoning.
 
 ## Safety And Capacity
 
