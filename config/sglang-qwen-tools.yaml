@@ -62,3 +62,5 @@ server:
 logging:
   path: experiments/logs
   format: jsonl
+  trace_path: experiments/logs/traces
+  metrics_path: experiments/logs/daily-metrics.jsonl

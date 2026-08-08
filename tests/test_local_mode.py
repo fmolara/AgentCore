@@ -15,6 +15,7 @@ import pytest
 
 from agentcore_server import (
     ActionPlan,
+    AgentEvent,
     AgentLab,
     PlanProposal,
     StreamChunk,
@@ -24,7 +25,13 @@ from agentcore_server import (
 from agentcore_server.executor.actions import ActionResult
 from agentcore_server.generation.result import GenerationMetrics, GenerationResult
 from agentcore_server.local import InvalidProposalError, LocalAgentCoreApp, LocalEventSink
-from agentcore_server.local.cli import LocalExitCode, run_cli
+from agentcore_server.local.cli import (
+    CliUsageError,
+    LocalExitCode,
+    _resolve_config,
+    build_parser,
+    run_cli,
+)
 from agentcore_server.planning import SimpleLLMPlanner
 from agentcore_server.planning.llm import PLANNER_SYSTEM_PROMPT
 from agentcore_server.runtime.base import Runtime
@@ -150,6 +157,120 @@ def _init_repo(workspace: Path) -> str:
         check=True,
     )
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+
+
+def test_tool_loop_defaults_to_installed_fast_profile(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    fast = profile_dir / "fast.yaml"
+    fast.write_text("runtime: sglang\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTCORE_PROFILE_DIR", str(profile_dir))
+    args = build_parser().parse_args(
+        ["--agent", "tool-loop", "--workspace", str(workspace)]
+    )
+
+    path, profile = _resolve_config(args)
+
+    assert path == str(fast.resolve())
+    assert profile == "fast"
+
+
+def test_strong_profile_is_explicit_and_legacy_mode_still_requires_config(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    strong = profile_dir / "strong.yaml"
+    strong.write_text("runtime: vllm\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTCORE_PROFILE_DIR", str(profile_dir))
+    args = build_parser().parse_args(
+        ["--agent", "tool-loop", "--profile", "strong", "--workspace", str(workspace)]
+    )
+
+    path, profile = _resolve_config(args)
+
+    assert path == str(strong.resolve())
+    assert profile == "strong"
+    planner_args = build_parser().parse_args(["--workspace", str(workspace)])
+    with pytest.raises(CliUsageError, match="legacy planner mode"):
+        _resolve_config(planner_args)
+
+
+def test_local_event_sink_writes_one_passive_tool_run_metric(tmp_path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    metrics_file = tmp_path / "metrics.jsonl"
+    sink = LocalEventSink(
+        trace_file=trace,
+        metrics_file=metrics_file,
+        metrics_context={"profile": "fast", "runtime": "sglang", "model": "Qwen3.6-27B"},
+    )
+
+    def emit(event_type: str, payload: dict | None = None) -> None:
+        sink.emit(
+            AgentEvent(
+                event_type=event_type,
+                summary=event_type,
+                task_id="task-1",
+                session_id="session-1",
+                payload=payload or {},
+            )
+        )
+
+    emit("agent.loop.started", {"protocol": "qwen"})
+    emit("agent.turn.completed", {"metrics": {
+        "prompt_tokens": 100,
+        "generated_tokens": 20,
+        "ttft_sec": 0.2,
+        "tokens_per_sec": 40.0,
+        "wall_sec": 0.7,
+    }})
+    emit("tool.call.received", {"tool": "run_check"})
+    emit("tool.approved", {"tool": "run_check"})
+    emit("tool.completed", {"tool": "run_check", "success": True})
+    emit("agent.final", {"text": "Done."})
+    emit("task.report", {"report": {"status": "completed", "files_changed": ["a.c"]}})
+    emit("git.diff", {"diff": "+change\n"})
+
+    records = [json.loads(line) for line in metrics_file.read_text().splitlines()]
+    assert len(records) == 1
+    record = records[0]
+    assert record["profile"] == "fast"
+    assert record["protocol"] == "qwen"
+    assert record["status"] == "completed"
+    assert record["model_turns"] == 1
+    assert record["tool_calls"] == 1
+    assert record["approvals"] == 1
+    assert record["checks_completed"] == 1
+    assert record["prompt_tokens"] == 100
+    assert record["generated_tokens"] == 20
+    assert record["final_response_present"] is True
+    assert record["files_changed"] == ["a.c"]
+    assert record["trace_file"] == str(trace.resolve())
+    assert len(trace.read_text().splitlines()) == 8
+
+
+def test_passive_metrics_failure_does_not_interrupt_event_delivery(tmp_path) -> None:
+    invalid_metrics_target = tmp_path / "metrics-directory"
+    invalid_metrics_target.mkdir()
+    rendered = []
+    sink = LocalEventSink(
+        renderer=rendered.append,
+        metrics_file=invalid_metrics_target,
+    )
+
+    for event_type, payload in (
+        ("agent.loop.started", {"protocol": "qwen"}),
+        ("task.report", {"report": {"status": "completed"}}),
+        ("git.diff", {"diff": ""}),
+    ):
+        sink.emit(AgentEvent(event_type, event_type, "task-1", "session-1", payload))
+
+    assert len(rendered) == 3
+    assert sink.metrics_errors
 
 
 def test_local_import_has_no_fastapi_or_agentclient_use() -> None:

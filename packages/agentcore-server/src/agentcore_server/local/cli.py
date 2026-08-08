@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import os
 import sys
 import traceback
 from enum import IntEnum
@@ -44,7 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agentcore-local",
         description="Run AgentCore orchestration locally without HTTP or agentclient.",
     )
-    parser.add_argument("--config", required=True, help="AgentCore runtime configuration")
+    config_group = parser.add_mutually_exclusive_group()
+    config_group.add_argument("--config", help="AgentCore runtime configuration")
+    config_group.add_argument(
+        "--profile",
+        choices=("fast", "strong"),
+        help="Use an installed local operational profile (default: fast for tool-loop mode)",
+    )
     parser.add_argument("--workspace", required=True, help="Local workspace root")
     parser.add_argument("--system-prompt", help="Override the selected mode's system prompt")
     mode_group = parser.add_mutually_exclusive_group()
@@ -90,6 +98,7 @@ def run_cli(
         args = parser.parse_args(list(argv) if argv is not None else None)
         _validate_args(args)
         instruction = _instruction_from_args(args)
+        config_path, selected_profile = _resolve_config(args)
     except CliUsageError as exc:
         stderr.write(f"agentcore-local: {exc}\n")
         return int(LocalExitCode.CLI_OR_CONFIG_ERROR)
@@ -106,8 +115,17 @@ def run_cli(
         debug=args.debug,
     )
     try:
-        lab = lab_factory(args.config)
-        sink = LocalEventSink(renderer=renderer.render_event, trace_file=args.trace_file)
+        lab = lab_factory(config_path)
+        trace_file = args.trace_file
+        if trace_file is None and args.agent in {"tool-loop", "qwen-tools"}:
+            trace_file = _automatic_trace_file(lab)
+        metrics_file = _configured_path(lab, "metrics_path")
+        sink = LocalEventSink(
+            renderer=renderer.render_event,
+            trace_file=trace_file,
+            metrics_file=metrics_file,
+            metrics_context=_metrics_context(lab, selected_profile),
+        )
         if args.agent in {"tool-loop", "qwen-tools"}:
             app = LocalToolLoopApp(
                 lab,
@@ -125,6 +143,10 @@ def run_cli(
                 planner_mode=args.planner,
                 event_sink=sink,
             )
+        if trace_file is not None and args.trace_file is None:
+            renderer.info(f"Automatic trace: {trace_file}")
+        if metrics_file is not None:
+            renderer.info(f"Passive metrics: {metrics_file}")
     except Exception as exc:
         _render_exception(renderer, exc, debug=args.debug)
         return int(LocalExitCode.CLI_OR_CONFIG_ERROR)
@@ -196,6 +218,64 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise CliUsageError(f"workspace does not exist: {workspace}")
     if not workspace.is_dir():
         raise CliUsageError(f"workspace is not a directory: {workspace}")
+
+
+def _resolve_config(args: argparse.Namespace) -> tuple[str, str | None]:
+    if args.config:
+        return args.config, args.profile
+    if args.agent not in {"tool-loop", "qwen-tools"}:
+        raise CliUsageError("--config is required for legacy planner mode")
+    profile = args.profile or "fast"
+    candidates: list[Path] = []
+    profile_dir = os.environ.get("AGENTCORE_PROFILE_DIR")
+    if profile_dir:
+        candidates.append(Path(profile_dir).expanduser() / f"{profile}.yaml")
+    candidates.extend(
+        [
+            Path.home() / ".config" / "agentcore" / "profiles" / f"{profile}.yaml",
+            Path.cwd() / "config" / "local" / f"{profile}.yaml",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve()), profile
+    searched = ", ".join(str(path) for path in candidates)
+    raise CliUsageError(
+        f"local profile '{profile}' is not installed; searched: {searched}. "
+        "Use --config or install the profile under ~/.config/agentcore/profiles."
+    )
+
+
+def _configured_path(lab: AgentLab, key: str) -> str | None:
+    logging_config = lab.config.get("logging", {})
+    if not isinstance(logging_config, dict):
+        raise CliUsageError("logging configuration must be a mapping")
+    value = logging_config.get(key)
+    if value in {None, ""}:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = lab.project_root / path
+    return str(path.resolve())
+
+
+def _automatic_trace_file(lab: AgentLab) -> str | None:
+    directory = _configured_path(lab, "trace_path")
+    if directory is None:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    return str(Path(directory) / f"tool-loop-{stamp}-{os.getpid()}.jsonl")
+
+
+def _metrics_context(lab: AgentLab, profile: str | None) -> dict[str, str | None]:
+    model_config = lab.config.get("model", {})
+    model_value = model_config.get("name") or model_config.get("path")
+    model_name = None if model_value is None else Path(str(model_value)).name
+    return {
+        "profile": profile or "custom",
+        "runtime": str(lab.config.get("runtime") or "unknown"),
+        "model": model_name,
+    }
 
 
 def _instruction_from_args(args: argparse.Namespace) -> str | None:
