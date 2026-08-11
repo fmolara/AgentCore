@@ -25,6 +25,11 @@ from agentcore_server.tool_agent import (
     ToolApprovalDecision,
     ToolSteeringInbox,
 )
+from agentcore_server.tool_agent.protocols import (
+    HarmonyToolProtocol,
+    MistralToolProtocol,
+    QwenToolProtocol,
+)
 from agentcore_server.tool_agent.tools import encode_tool_result
 
 
@@ -737,6 +742,296 @@ def test_loop_limit_stops_safely_without_action_plan_or_commit(tmp_path, monkeyp
     assert types.count("task.report") == 1
     assert sink.events[-2].event_type == "task.report"
     assert sink.events[-1].event_type == "git.diff"
+
+
+def test_progressing_task_gets_one_runway_and_completes(tmp_path) -> None:
+    checks = {
+        "test": {
+            "argv": [
+                sys.executable,
+                "-c",
+                "import pathlib,sys; sys.exit(pathlib.Path('state.txt').read_text().strip() != 'good')",
+            ]
+        }
+    }
+    turns = [
+        turn(call("edit_bad", 0, "edit", {"path": "state.txt", "old": "bad", "new": "broken"})),
+        turn(call("test_fail", 0, "run_check", {"check": "test"})),
+        turn(call("edit_fix", 0, "edit", {"path": "state.txt", "old": "broken", "new": "good"})),
+        turn(call("test_pass", 0, "run_check", {"check": "test"})),
+        turn(call("diff", 0, "git_diff", {})),
+        turn(text="Corrected the failure, passed the test, and inspected the diff."),
+    ]
+    limits = QwenToolAgentLimits(
+        max_model_turns=4,
+        completion_runway_turns=2,
+        progress_window_turns=4,
+    )
+    workspace, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path,
+        turns,
+        decisions=[True, True, True, True],
+        checks=checks,
+        limits=limits,
+    )
+    (workspace / "state.txt").write_text("bad\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "add", "state.txt"], cwd=workspace, check=True)
+
+    result = tool_agent.run(
+        task,
+        "Run the configured test check and inspect the final Git diff.",
+    )
+
+    assert result.status == "completed"
+    assert result.turns == 6
+    assert result.metadata == {
+        "runway_granted": True,
+        "runway_turns_used": 2,
+        "normal_turn_limit": 4,
+        "absolute_turn_limit": 6,
+    }
+    grants = [
+        event for event in sink.events if event.event_type == "agent.turn_runway.granted"
+    ]
+    assert len(grants) == 1
+    assert grants[0].payload["current_turn"] == 4
+    kinds = {item["kind"] for item in grants[0].payload["recent_progress_events"]}
+    assert {"workspace_changed", "check_failed", "check_recovered"} <= kinds
+
+
+def test_repeated_read_search_loop_gets_no_runway(tmp_path) -> None:
+    limits = QwenToolAgentLimits(
+        max_model_turns=2,
+        completion_runway_turns=2,
+        progress_window_turns=2,
+    )
+    turns = [
+        turn(call("search_1", 0, "search_files", {"root": ".", "content_query": "x"})),
+        turn(call("search_2", 0, "search_files", {"root": ".", "content_query": "x"})),
+    ]
+    _, _, _, tool_agent, task, _, sink = prepare(tmp_path, turns, limits=limits)
+
+    result = tool_agent.run(task, "Keep searching")
+
+    assert result.status == "failed"
+    assert "completion runway not eligible" in (result.error or "")
+    assert not any(
+        event.event_type == "agent.turn_runway.granted" for event in sink.events
+    )
+
+
+def test_repeated_malformed_calls_get_no_runway_despite_older_progress(tmp_path) -> None:
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    limits = QwenToolAgentLimits(
+        max_model_turns=4,
+        completion_runway_turns=2,
+        progress_window_turns=4,
+    )
+    turns = [
+        turn(call("edit", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(call("check", 0, "run_check", {"check": "test"})),
+        turn(malformed_call("bad_1", "edit", '{"path":')),
+        turn(malformed_call("bad_2", "edit", '{"path":')),
+    ]
+    workspace, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path, turns, decisions=[True, True], checks=checks, limits=limits
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit and validate")
+
+    assert result.status == "failed"
+    assert "completion runway not eligible" in (result.error or "")
+    assert not any(
+        event.event_type == "agent.turn_runway.granted" for event in sink.events
+    )
+
+
+def test_completion_runway_configuration_has_fixed_absolute_cap() -> None:
+    with pytest.raises(ValueError, match="must not exceed 12"):
+        QwenToolAgentLimits.from_config({"completion_runway_turns": 13})
+    with pytest.raises(ValueError, match="must not exceed 52"):
+        QwenToolAgentLimits.from_config({
+            "max_model_turns": 41,
+            "completion_runway_turns": 12,
+        })
+
+
+def test_rejection_limit_wins_without_runway(tmp_path) -> None:
+    limits = QwenToolAgentLimits(
+        max_model_turns=2,
+        completion_runway_turns=2,
+        max_rejected_side_effecting_calls=1,
+    )
+    turns = [
+        turn(call("edit_1", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+    ]
+    workspace, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path, turns, decisions=[False], limits=limits
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit")
+
+    assert result.status == "failed"
+    assert "max_rejected_side_effecting_calls=1" in (result.error or "")
+    assert (workspace / "main.c").read_text(encoding="utf-8") == "a\n"
+    assert not any(
+        event.event_type == "agent.turn_runway.granted" for event in sink.events
+    )
+
+
+def test_runway_never_recurses_past_absolute_limit(tmp_path) -> None:
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    limits = QwenToolAgentLimits(
+        max_model_turns=2,
+        completion_runway_turns=2,
+        progress_window_turns=2,
+    )
+    turns = [
+        turn(call("edit", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(call("check", 0, "run_check", {"check": "test"})),
+        turn(call("read_1", 0, "read_file", {"path": "main.c"})),
+        turn(call("read_2", 0, "read_file", {"path": "main.c"})),
+    ]
+    workspace, _, _, tool_agent, task, _, sink = prepare(
+        tmp_path, turns, decisions=[True, True], checks=checks, limits=limits
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit and validate")
+
+    assert result.status == "failed"
+    assert result.turns == 4
+    assert "absolute_model_turns=4" in (result.error or "")
+    assert result.metadata["runway_granted"] is True
+    assert sum(
+        event.event_type == "agent.turn_runway.granted" for event in sink.events
+    ) == 1
+
+
+def test_runway_does_not_bypass_context_preflight(tmp_path) -> None:
+    class RunwayContextFailureRuntime(ScriptedToolRuntime):
+        def __init__(self, scripted):
+            super().__init__(scripted)
+            self.preflight_calls = 0
+
+        def stream_tool_turn(self, session, tools, **kwargs):
+            self.preflight_calls += 1
+            if self.preflight_calls <= 2:
+                yield from super().stream_tool_turn(session, tools, **kwargs)
+                return
+            yield ToolTurnChunk.started(metadata={
+                "context_limit": 4096,
+                "exact_prompt_tokens": 3800,
+                "configured_max_tokens": 2048,
+                "safety_margin_tokens": 128,
+                "available_tokens": 168,
+                "effective_max_tokens": 168,
+                "minimum_output_tokens": 256,
+                "sufficient": False,
+            })
+            raise RuntimeError("native tool turn has insufficient context capacity")
+
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = RunwayContextFailureRuntime([
+        turn(call("edit", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(call("check", 0, "run_check", {"check": "test"})),
+    ])
+    lab = make_lab(workspace, runtime, checks=checks)
+    sink = ListEventSink()
+    agent = lab.create_agent(event_sink=sink)
+    task = agent.create_task(title="Tool task", description="test")
+    approval = ScriptedApproval([True, True])
+    tool_agent = QwenToolAgent(
+        agent,
+        approval_gateway=approval,
+        limits=QwenToolAgentLimits(max_model_turns=2, completion_runway_turns=1),
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit and validate")
+
+    assert result.status == "failed"
+    assert "insufficient context capacity" in (result.error or "")
+    assert len(runtime.requests) == 2
+    assert any(
+        event.event_type == "agent.turn_runway.granted" for event in sink.events
+    )
+    assert any(event.event_type == "agent.context.insufficient" for event in sink.events)
+
+
+def test_cancellation_during_runway_remains_authoritative(tmp_path) -> None:
+    class CancellingRuntime(ScriptedToolRuntime):
+        task = None
+        calls = 0
+
+        def stream_tool_turn(self, session, tools, **kwargs):
+            self.calls += 1
+            if self.calls == 3:
+                self.task.request_cancellation("operator cancelled during runway")
+            yield from super().stream_tool_turn(session, tools, **kwargs)
+
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = CancellingRuntime([
+        turn(call("edit", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(call("check", 0, "run_check", {"check": "test"})),
+        turn(call("read", 0, "read_file", {"path": "main.c"})),
+    ])
+    lab = make_lab(workspace, runtime, checks=checks)
+    sink = ListEventSink()
+    agent = lab.create_agent(event_sink=sink)
+    task = agent.create_task(title="Tool task", description="test")
+    runtime.task = task
+    tool_agent = QwenToolAgent(
+        agent,
+        approval_gateway=ScriptedApproval([True, True]),
+        limits=QwenToolAgentLimits(max_model_turns=2, completion_runway_turns=2),
+    )
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit and validate")
+
+    assert result.status == "cancelled"
+    assert result.tool_calls == 3
+    assert len(result.tool_results) == 2
+    assert "operator cancelled" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    [QwenToolProtocol(), MistralToolProtocol(), HarmonyToolProtocol()],
+    ids=["qwen", "mistral", "harmony"],
+)
+def test_completion_runway_is_protocol_neutral(tmp_path, protocol) -> None:
+    checks = {"test": {"argv": [sys.executable, "-c", "print('ok')"]}}
+    turns = [
+        turn(call("edit", 0, "edit", {"path": "main.c", "old": "a", "new": "b"})),
+        turn(call("check", 0, "run_check", {"check": "test"})),
+        turn(text="Finished after validation."),
+    ]
+    workspace, runtime, _, tool_agent, task, _, sink = prepare(
+        tmp_path,
+        turns,
+        decisions=[True, True],
+        checks=checks,
+        limits=QwenToolAgentLimits(max_model_turns=2, completion_runway_turns=1),
+    )
+    runtime.tool_protocol = protocol
+    (workspace / "main.c").write_text("a\n", encoding="utf-8")
+
+    result = tool_agent.run(task, "Edit and validate")
+
+    assert result.status == "completed"
+    assert result.turns == 3
+    assert result.metadata["runway_granted"] is True
+    started = next(event for event in sink.events if event.event_type == "agent.loop.started")
+    assert started.payload["protocol"] == protocol.name
 
 
 def test_context_failure_is_terminal_and_reports_exact_capacity(tmp_path) -> None:

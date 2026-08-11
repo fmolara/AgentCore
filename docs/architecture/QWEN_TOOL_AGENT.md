@@ -110,6 +110,16 @@ never elided. A request is still refused when fewer than
 capacity. This is bounded native transcript maintenance, not Planner evidence
 selection, task reconstruction, or an EvidencePack.
 
+The normal model-turn limit is 40. At that boundary, the shared ToolLoopAgent
+may grant one completion runway of at most 12 turns (absolute limit 52) only
+when the last eight turns contain an actual workspace change followed by a
+successful configured check or Git-diff inspection and are not dominated by
+repeated identical discovery calls. The decision uses host-observed tool
+results, never model prose or another model. Rejection limits, cancellation,
+runtime failures, and context preflight remain authoritative. A runway cannot
+recurse. `agent.turn_runway.granted` and passive metrics record the bounded
+grant and its use without recording source or prompt content.
+
 An OpenAI-compatible runtime may report a generation failure as a top-level
 SSE `error` object even when the HTTP response status is 200. AgentCore
 preserves its type, message, and code as a runtime failure. A stream with no

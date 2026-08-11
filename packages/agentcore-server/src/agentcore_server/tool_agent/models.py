@@ -11,7 +11,9 @@ from agentcore_server.tasks import TaskReport
 
 @dataclass(frozen=True)
 class ToolAgentLimits:
-    max_model_turns: int = 32
+    max_model_turns: int = 40
+    completion_runway_turns: int = 12
+    progress_window_turns: int = 8
     max_total_tool_calls: int = 64
     max_tool_calls_per_turn: int = 8
     max_consecutive_tool_failures: int = 4
@@ -32,6 +34,14 @@ class ToolAgentLimits:
     max_changed_lines: int = 1200
     max_rejected_side_effecting_calls: int = 5
     max_consecutive_rejected_side_effecting_calls: int = 5
+
+    def __post_init__(self) -> None:
+        if self.completion_runway_turns > 12:
+            raise ValueError("completion_runway_turns must not exceed 12")
+        if self.max_model_turns + self.completion_runway_turns > 52:
+            raise ValueError(
+                "max_model_turns plus completion_runway_turns must not exceed 52"
+            )
 
     @classmethod
     def from_config(cls, data: dict[str, Any] | None) -> "ToolAgentLimits":

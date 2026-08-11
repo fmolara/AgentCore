@@ -231,6 +231,20 @@ def test_local_event_sink_writes_one_passive_tool_run_metric(tmp_path) -> None:
     emit("tool.call.received", {"tool": "run_check"})
     emit("tool.approved", {"tool": "run_check"})
     emit("tool.completed", {"tool": "run_check", "success": True})
+    emit("agent.turn_runway.granted", {
+        "base_limit": 1,
+        "runway_turns": 2,
+        "absolute_limit": 3,
+        "current_turn": 1,
+        "recent_progress_events": [],
+    })
+    emit("agent.turn.completed", {"metrics": {
+        "prompt_tokens": 80,
+        "generated_tokens": 10,
+        "ttft_sec": 0.1,
+        "tokens_per_sec": 50.0,
+        "wall_sec": 0.3,
+    }})
     emit("agent.final", {"text": "Done."})
     emit("task.report", {"report": {"status": "completed", "files_changed": ["a.c"]}})
     emit("git.diff", {"diff": "+change\n"})
@@ -241,16 +255,21 @@ def test_local_event_sink_writes_one_passive_tool_run_metric(tmp_path) -> None:
     assert record["profile"] == "fast"
     assert record["protocol"] == "qwen"
     assert record["status"] == "completed"
-    assert record["model_turns"] == 1
+    assert record["model_turns"] == 2
     assert record["tool_calls"] == 1
     assert record["approvals"] == 1
     assert record["checks_completed"] == 1
-    assert record["prompt_tokens"] == 100
-    assert record["generated_tokens"] == 20
+    assert record["prompt_tokens"] == 180
+    assert record["generated_tokens"] == 30
     assert record["final_response_present"] is True
+    assert record["runway_granted"] is True
+    assert record["runway_turns"] == 2
+    assert record["runway_turns_used"] == 1
+    assert record["normal_turn_limit"] == 1
+    assert record["absolute_turn_limit"] == 3
     assert record["files_changed"] == ["a.c"]
     assert record["trace_file"] == str(trace.resolve())
-    assert len(trace.read_text().splitlines()) == 8
+    assert len(trace.read_text().splitlines()) == 10
 
 
 def test_passive_metrics_failure_does_not_interrupt_event_delivery(tmp_path) -> None:

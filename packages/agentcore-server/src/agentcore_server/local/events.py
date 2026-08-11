@@ -67,6 +67,9 @@ class LocalEventSink:
             return
         task_id = event.task_id
         if event.event_type == "agent.loop.started":
+            limits = event.payload.get("limits") or {}
+            normal_turn_limit = limits.get("max_model_turns")
+            runway_turns = int(limits.get("completion_runway_turns") or 0)
             self._runs[task_id] = {
                 "started_monotonic": monotonic(),
                 "started_at": datetime.now(timezone.utc).isoformat(),
@@ -86,6 +89,15 @@ class LocalEventSink:
                 "generation_wall_sec": 0.0,
                 "first_ttft_sec": None,
                 "final_response_present": False,
+                "runway_granted": False,
+                "runway_turns": runway_turns,
+                "runway_turns_used": 0,
+                "normal_turn_limit": normal_turn_limit,
+                "absolute_turn_limit": (
+                    None
+                    if normal_turn_limit is None
+                    else int(normal_turn_limit) + runway_turns
+                ),
                 "report": None,
             }
             return
@@ -102,6 +114,14 @@ class LocalEventSink:
             run["generation_wall_sec"] += float(metrics.get("wall_sec") or 0.0)
             if run["first_ttft_sec"] is None and metrics.get("ttft_sec") is not None:
                 run["first_ttft_sec"] = float(metrics["ttft_sec"])
+            normal_limit = run.get("normal_turn_limit")
+            if normal_limit is not None:
+                run["runway_turns_used"] = max(0, run["model_turns"] - normal_limit)
+        elif event.event_type == "agent.turn_runway.granted":
+            run["runway_granted"] = True
+            run["runway_turns"] = int(event.payload["runway_turns"])
+            run["normal_turn_limit"] = int(event.payload["base_limit"])
+            run["absolute_turn_limit"] = int(event.payload["absolute_limit"])
         elif event.event_type == "tool.call.received":
             run["tool_calls"] += 1
         elif event.event_type == "tool.approved":
@@ -146,6 +166,11 @@ class LocalEventSink:
             "generation_wall_sec": round(run["generation_wall_sec"], 6),
             "first_ttft_sec": run["first_ttft_sec"],
             "final_response_present": run["final_response_present"],
+            "runway_granted": run["runway_granted"],
+            "runway_turns": run["runway_turns"],
+            "runway_turns_used": run["runway_turns_used"],
+            "normal_turn_limit": run["normal_turn_limit"],
+            "absolute_turn_limit": run["absolute_turn_limit"],
             "files_changed": report.get("files_changed", []),
             "diff_bytes": len(str(event.payload.get("diff") or "").encode("utf-8")),
             "trace_file": None if self.trace_file is None else str(self.trace_file),
