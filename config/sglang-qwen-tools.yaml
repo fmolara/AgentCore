@@ -21,6 +21,8 @@ generation:
 tool_agent:
   protocol: qwen
   max_model_turns: 40
+  completion_runway_turns: 12
+  progress_window_turns: 8
   max_total_tool_calls: 80
   max_tool_calls_per_turn: 8
   max_consecutive_tool_failures: 4

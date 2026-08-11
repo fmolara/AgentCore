@@ -19,7 +19,9 @@ generation:
   enable_thinking: false
 
 tool_agent:
-  max_model_turns: 32
+  max_model_turns: 40
+  completion_runway_turns: 12
+  progress_window_turns: 8
   max_total_tool_calls: 64
   max_tool_calls_per_turn: 8
   max_consecutive_tool_failures: 4

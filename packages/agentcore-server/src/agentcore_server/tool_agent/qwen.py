@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass, field
 from hashlib import sha256
 import json
 import re
@@ -33,6 +35,136 @@ _REPLAYABLE_READ_ONLY_TOOLS = frozenset({
     "git_status",
     "git_diff",
 })
+_DISCOVERY_TOOLS = frozenset({"list_directory", "search_files", "read_file"})
+
+
+@dataclass
+class _TurnProgress:
+    turn: int
+    tool_calls: int = 0
+    discovery_calls: int = 0
+    repeated_discovery_calls: int = 0
+    repeated_malformed_calls: int = 0
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+
+class _ProgressTracker:
+    """Track objective recent tool activity for one bounded runway decision."""
+
+    def __init__(self, window: int, initial_workspace_state: str | None) -> None:
+        self.window = window
+        self.turns: deque[_TurnProgress] = deque(maxlen=window)
+        self._seen_discovery: set[str] = set()
+        self._seen_malformed: set[str] = set()
+        self._rejected: set[str] = set()
+        self._failed_checks: dict[str, int] = {}
+        self._latest_mutation_turn = -1
+        self._workspace_state = initial_workspace_state
+
+    def begin_turn(self, turn: int, calls: tuple[ToolCall, ...]) -> None:
+        activity = _TurnProgress(turn=turn, tool_calls=len(calls))
+        for call in calls:
+            if call.parsing_error:
+                signature = self._call_signature(call)
+                if signature in self._seen_malformed:
+                    activity.repeated_malformed_calls += 1
+                self._seen_malformed.add(signature)
+            if call.function_name not in _DISCOVERY_TOOLS:
+                continue
+            activity.discovery_calls += 1
+            signature = self._call_signature(call)
+            if signature in self._seen_discovery:
+                activity.repeated_discovery_calls += 1
+            self._seen_discovery.add(signature)
+        self.turns.append(activity)
+
+    def record_tool(
+        self,
+        *,
+        turn: int,
+        tool: str,
+        success: bool,
+        data: dict[str, Any],
+        workspace_state_digest: str | None = None,
+    ) -> None:
+        activity = self._activity(turn)
+        if success and tool in {"edit", "write_file"}:
+            if (
+                workspace_state_digest is not None
+                and workspace_state_digest == self._workspace_state
+            ):
+                return
+            self._workspace_state = workspace_state_digest
+            self._latest_mutation_turn = turn
+            activity.events.append({
+                "turn": turn,
+                "kind": "workspace_changed",
+                "workspace_state_sha256": workspace_state_digest,
+            })
+            return
+        if tool == "run_check":
+            check = data.get("check") if isinstance(data.get("check"), dict) else {}
+            name = str(check.get("name") or check.get("check") or "configured")
+            if success:
+                kind = "check_passed"
+                failed_turn = self._failed_checks.get(name)
+                if (
+                    failed_turn is not None
+                    and failed_turn < self._latest_mutation_turn <= turn
+                ):
+                    kind = "check_recovered"
+                activity.events.append({"turn": turn, "kind": kind, "check": name})
+            else:
+                self._failed_checks[name] = turn
+                activity.events.append({"turn": turn, "kind": "check_failed", "check": name})
+            return
+        if success and tool == "git_diff":
+            activity.events.append({"turn": turn, "kind": "git_diff_inspected"})
+
+    def record_rejection(self, turn: int, call: ToolCall) -> None:
+        signature = self._call_signature(call)
+        if signature in self._rejected:
+            self._activity(turn).events.append({
+                "turn": turn,
+                "kind": "repeated_rejection",
+            })
+        self._rejected.add(signature)
+
+    def runway_evidence(self) -> list[dict[str, Any]] | None:
+        activities = list(self.turns)
+        events = [event for activity in activities for event in activity.events]
+        mutations = [event for event in events if event["kind"] == "workspace_changed"]
+        validations = [
+            event
+            for event in events
+            if event["kind"] in {"check_passed", "check_recovered", "git_diff_inspected"}
+        ]
+        if not mutations or not any(
+            mutation["turn"] <= validation["turn"]
+            for mutation in mutations
+            for validation in validations
+        ):
+            return None
+        repeated = sum(item.repeated_discovery_calls for item in activities)
+        non_discovery = sum(item.tool_calls - item.discovery_calls for item in activities)
+        if repeated > non_discovery:
+            return None
+        if any(item.repeated_malformed_calls for item in activities):
+            return None
+        if any(event["kind"] == "repeated_rejection" for event in events):
+            return None
+        return events
+
+    def _activity(self, turn: int) -> _TurnProgress:
+        if not self.turns or self.turns[-1].turn != turn:
+            self.turns.append(_TurnProgress(turn=turn))
+        return self.turns[-1]
+
+    @staticmethod
+    def _call_signature(call: ToolCall) -> str:
+        return sha256(
+            (call.function_name + "\0" + call.argument_text).encode("utf-8")
+        ).hexdigest()
 
 
 class ToolLoopAgent:
@@ -78,6 +210,16 @@ class ToolLoopAgent:
         })
         results: list[ToolResult] = []
         turns = 0
+        current_turn_limit = self.limits.max_model_turns
+        absolute_turn_limit = (
+            self.limits.max_model_turns + self.limits.completion_runway_turns
+        )
+        runway_granted = False
+        progress = _ProgressTracker(
+            self.limits.progress_window_turns,
+            self._workspace_state_digest(),
+        )
+        self._last_context_preflight_healthy = True
         total_calls = 0
         total_result_bytes = 0
         consecutive_failures = 0
@@ -91,7 +233,43 @@ class ToolLoopAgent:
         error: str | None = None
 
         try:
-            while turns < self.limits.max_model_turns:
+            while True:
+                if turns >= current_turn_limit:
+                    self._cancel_if_requested(task)
+                    evidence = progress.runway_evidence()
+                    runway_eligible = (
+                        not runway_granted
+                        and current_turn_limit == self.limits.max_model_turns
+                        and self._last_context_preflight_healthy
+                        and total_rejections < self.limits.max_rejected_side_effecting_calls
+                        and consecutive_rejections
+                        < self.limits.max_consecutive_rejected_side_effecting_calls
+                        and evidence is not None
+                    )
+                    if runway_eligible:
+                        runway_granted = True
+                        current_turn_limit = absolute_turn_limit
+                        self._emit(
+                            "agent.turn_runway.granted",
+                            "One bounded completion runway granted",
+                            task,
+                            {
+                                "base_limit": self.limits.max_model_turns,
+                                "runway_turns": self.limits.completion_runway_turns,
+                                "absolute_limit": absolute_turn_limit,
+                                "current_turn": turns,
+                                "recent_progress_events": evidence,
+                            },
+                        )
+                    else:
+                        if runway_granted:
+                            raise LoopLimitError(
+                                f"absolute_model_turns={absolute_turn_limit} reached after one completion runway"
+                            )
+                        raise LoopLimitError(
+                            f"max_model_turns={self.limits.max_model_turns} reached; "
+                            "completion runway not eligible"
+                        )
                 self._cancel_if_requested(task)
                 turns += 1
                 self._emit("agent.turn.started", "Assistant tool turn started", task, {
@@ -104,6 +282,7 @@ class ToolLoopAgent:
                     "tool_call_count": len(turn.tool_calls),
                     "metrics": turn.metrics.as_dict(),
                 })
+                progress.begin_turn(turns, turn.tool_calls)
                 if not turn.tool_calls:
                     if not turn.text.strip():
                         raise RuntimeError("model returned neither tool calls nor a final response")
@@ -166,6 +345,7 @@ class ToolLoopAgent:
                         assert item is not None
                         success, data = self._execute_one(task, item)
                         if data.get("rejected"):
+                            progress.record_rejection(turns, call)
                             total_rejections += 1
                             consecutive_rejections += 1
                             consecutive_failures = 0
@@ -193,6 +373,16 @@ class ToolLoopAgent:
                             successful_checks[item.arguments["check"]] = mutation_revision
                         elif success and item.definition.name == "git_diff":
                             git_diff_revision = mutation_revision
+                        workspace_state_digest = None
+                        if success and item.definition.name in {"edit", "write_file"}:
+                            workspace_state_digest = self._workspace_state_digest()
+                        progress.record_tool(
+                            turn=turns,
+                            tool=item.definition.name,
+                            success=success,
+                            data=data,
+                            workspace_state_digest=workspace_state_digest,
+                        )
                     result, result_bytes = self._result(
                         call,
                         success,
@@ -220,8 +410,6 @@ class ToolLoopAgent:
                     self._emit("agent.steering.queued", "Steering message appended", task, {
                         "message": steering,
                     })
-            else:
-                raise LoopLimitError(f"max_model_turns={self.limits.max_model_turns} reached")
         except ToolAgentCancelled as exc:
             error = str(exc)
             if task.status == TaskStatus.RUNNING:
@@ -259,6 +447,12 @@ class ToolLoopAgent:
             tool_results=tuple(results),
             report=task.report(),
             error=error,
+            metadata={
+                "runway_granted": runway_granted,
+                "runway_turns_used": max(0, turns - self.limits.max_model_turns),
+                "normal_turn_limit": self.limits.max_model_turns,
+                "absolute_turn_limit": absolute_turn_limit,
+            },
         )
 
     def _generate_turn(self, task: Task, turn_number: int) -> AssistantTurn:
@@ -279,6 +473,9 @@ class ToolLoopAgent:
                         raise RuntimeError(chunk.error or "native tool turn failed")
                     if chunk.chunk_type == "started":
                         capacity = chunk.metadata
+                        self._last_context_preflight_healthy = bool(
+                            capacity.get("sufficient", True)
+                        )
                         compacted = self._compact_context_if_needed(capacity)
                         event_type = (
                             "agent.context.preflight"
@@ -575,6 +772,17 @@ class ToolLoopAgent:
             "sha256": sha256(encoded).hexdigest(),
             "excerpt": encoded[:limit].decode("utf-8", errors="ignore"),
         }
+
+    def _workspace_state_digest(self) -> str | None:
+        if not self.agent.git.is_repo():
+            return None
+        status = self.agent.git.status()
+        diff = self.agent.git.diff()
+        if not status.ok or not diff.ok:
+            return None
+        return sha256(
+            (status.stdout + "\0" + diff.stdout).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def _cancel_if_requested(task: Task) -> None:
