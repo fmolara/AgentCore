@@ -148,9 +148,13 @@ tool. Workspace traversal and symlink escapes are rejected.
 
 Before each model request, AgentCore tokenizes the exact rendered transcript
 and native tool schemas, reserves a safety margin, and clamps output to the
-remaining configured context. Requests below the minimum output reserve fail
-visibly. Tool results and trace payloads are bounded; the transcript is not
-rebuilt into a planner EvidencePack.
+remaining configured context. If a long session falls below its recovery
+target, old replayable read-only results are replaced one at a time with
+digest-bearing markers while native tool-call/result pairing and recent results
+remain intact. Exact preflight is repeated before any model request. Requests
+that still fall below the minimum output reserve fail visibly. Tool results and
+trace payloads remain bounded; the transcript is never rebuilt into a planner
+EvidencePack.
 
 ## Traces And Exit Codes
 

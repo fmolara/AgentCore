@@ -26,6 +26,14 @@ from agentcore_server.tool_agent.protocols import TOOL_AGENT_SYSTEM_PROMPT
 
 QWEN_TOOL_AGENT_SYSTEM_PROMPT = TOOL_AGENT_SYSTEM_PROMPT
 
+_REPLAYABLE_READ_ONLY_TOOLS = frozenset({
+    "list_directory",
+    "search_files",
+    "read_file",
+    "git_status",
+    "git_diff",
+})
+
 
 class ToolLoopAgent:
     """Persistent native tool loop with AgentCore workspace and approval safety."""
@@ -257,37 +265,70 @@ class ToolLoopAgent:
         completed: AssistantTurn | None = None
         self._emit("assistant.started", "Assistant response started", task, {"turn": turn_number})
         try:
-            for chunk in self.agent.runtime.stream_tool_turn(
-                self.agent.session,
-                self.registry.schemas(),
-                context_safety_margin_tokens=self.limits.context_safety_margin_tokens,
-                minimum_output_tokens=self.limits.minimum_output_tokens,
-                **self.agent.generation_options,
-            ):
-                if chunk.chunk_type == "failed":
-                    raise RuntimeError(chunk.error or "native tool turn failed")
-                if chunk.chunk_type == "started":
-                    capacity = chunk.metadata
-                    if "effective_max_tokens" in capacity:
+            while True:
+                restart_after_compaction = False
+                stream = self.agent.runtime.stream_tool_turn(
+                    self.agent.session,
+                    self.registry.schemas(),
+                    context_safety_margin_tokens=self.limits.context_safety_margin_tokens,
+                    minimum_output_tokens=self.limits.minimum_output_tokens,
+                    **self.agent.generation_options,
+                )
+                for chunk in stream:
+                    if chunk.chunk_type == "failed":
+                        raise RuntimeError(chunk.error or "native tool turn failed")
+                    if chunk.chunk_type == "started":
+                        capacity = chunk.metadata
+                        compacted = self._compact_context_if_needed(capacity)
                         event_type = (
                             "agent.context.preflight"
-                            if capacity.get("sufficient")
+                            if capacity.get("sufficient") or compacted is not None
                             else "agent.context.insufficient"
                         )
-                        self._emit(event_type, "Native tool-turn context capacity checked", task, {
-                            **capacity,
+                        if "effective_max_tokens" in capacity:
+                            self._emit(
+                                event_type,
+                                "Native tool-turn context capacity checked",
+                                task,
+                                {**capacity, "turn": turn_number},
+                            )
+                        if compacted is not None:
+                            self._emit(
+                                "agent.context.compacted",
+                                "Old replayable tool result compacted",
+                                task,
+                                {
+                                    **compacted,
+                                    "turn": turn_number,
+                                    "prompt_tokens_before": capacity["exact_prompt_tokens"],
+                                    "effective_max_tokens_before": capacity[
+                                        "effective_max_tokens"
+                                    ],
+                                    "target_output_tokens": self._context_recovery_target(
+                                        capacity
+                                    ),
+                                },
+                            )
+                            close = getattr(stream, "close", None)
+                            if close is not None:
+                                close()
+                            restart_after_compaction = True
+                            break
+                    elif chunk.chunk_type == "text_delta" and chunk.text_delta:
+                        self._emit("assistant.delta", "Assistant response delta", task, {
+                            "delta": chunk.text_delta,
                             "turn": turn_number,
                         })
-                elif chunk.chunk_type == "text_delta" and chunk.text_delta:
-                    self._emit("assistant.delta", "Assistant response delta", task, {
-                        "delta": chunk.text_delta,
-                        "turn": turn_number,
-                    })
-                elif chunk.chunk_type == "tool_call_delta" and chunk.tool_call_delta is not None:
-                    # Raw fragments remain runtime data; lifecycle events are emitted after assembly.
-                    continue
-                elif chunk.chunk_type == "completed":
-                    completed = chunk.turn
+                    elif (
+                        chunk.chunk_type == "tool_call_delta"
+                        and chunk.tool_call_delta is not None
+                    ):
+                        # Raw fragments remain runtime data; lifecycle events are emitted after assembly.
+                        continue
+                    elif chunk.chunk_type == "completed":
+                        completed = chunk.turn
+                if not restart_after_compaction:
+                    break
         except RuntimeError as exc:
             self._emit("agent.turn.failed", "Assistant tool turn failed", task, {
                 "turn": turn_number,
@@ -312,6 +353,29 @@ class ToolLoopAgent:
                 "parsing_error": call.parsing_error,
             })
         return completed
+
+    def _compact_context_if_needed(self, capacity: dict[str, Any]) -> dict[str, Any] | None:
+        if "effective_max_tokens" not in capacity:
+            return None
+        configured = int(capacity.get("configured_max_tokens", 0))
+        if configured < self.limits.minimum_output_tokens:
+            return None
+        if int(capacity["effective_max_tokens"]) >= self._context_recovery_target(capacity):
+            return None
+        return self.agent.session.compact_oldest_tool_result(
+            replayable_tools=_REPLAYABLE_READ_ONLY_TOOLS,
+            preserve_recent=self.limits.preserve_recent_tool_results,
+        )
+
+    def _context_recovery_target(self, capacity: dict[str, Any]) -> int:
+        configured = int(capacity.get("configured_max_tokens", 0))
+        return min(
+            configured,
+            max(
+                self.limits.minimum_output_tokens,
+                self.limits.context_recovery_target_tokens,
+            ),
+        )
 
     def _validate_turn_calls(
         self,

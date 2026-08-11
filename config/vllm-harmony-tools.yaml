@@ -34,6 +34,8 @@ tool_agent:
   max_search_results: 100
   context_safety_margin_tokens: 128
   minimum_output_tokens: 256
+  context_recovery_target_tokens: 2048
+  preserve_recent_tool_results: 8
   max_edit_old_bytes: 65536
   max_edit_new_bytes: 65536
   max_write_file_bytes: 262144

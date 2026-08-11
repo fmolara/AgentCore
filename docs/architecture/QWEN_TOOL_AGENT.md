@@ -97,9 +97,18 @@ failures, individual and cumulative result bytes, read lines, directory depth,
 search results, and native-turn context capacity. Before each request, the
 runtime renders the exact transcript and native tool schemas with the configured
 tokenizer, reserves `context_safety_margin_tokens` (default 128), and clamps
-generation to the remaining context. A request is not sent when fewer than
-`minimum_output_tokens` (default 256) remain. This mode does not truncate the
-transcript or invoke planner-style context compaction.
+generation to the remaining context. When output capacity drops below
+`context_recovery_target_tokens` (default 2048), the loop deterministically
+elides the oldest replayable read-only tool result and repeats the exact
+preflight before making a model request. The assistant tool call, role=tool
+message, call ID, success state, byte count, and content digest remain in place;
+the model can rerun the read, search, listing, status, or diff tool if it needs
+the omitted data. At least `preserve_recent_tool_results` results (default 8)
+remain complete, and edit, write, approval, rejection, and check results are
+never elided. A request is still refused when fewer than
+`minimum_output_tokens` (default 256) remain and no eligible result can recover
+capacity. This is bounded native transcript maintenance, not Planner evidence
+selection, task reconstruction, or an EvidencePack.
 
 An OpenAI-compatible runtime may report a generation failure as a top-level
 SSE `error` object even when the HTTP response status is 200. AgentCore

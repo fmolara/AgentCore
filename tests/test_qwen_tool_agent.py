@@ -172,6 +172,35 @@ def test_session_serializes_native_assistant_and_tool_messages() -> None:
     }
 
 
+def test_session_compacts_only_old_replayable_tool_results() -> None:
+    session = Session(system_prompt="system")
+    edit_call = call("edit_1", 0, "edit", {"path": "a.c", "old": "a", "new": "b"})
+    read_call = call("read_1", 0, "read_file", {"path": "a.c"})
+    recent_call = call("read_2", 0, "read_file", {"path": "b.c"})
+    session.add_assistant_tool_message("", (edit_call,))
+    session.add_tool_result(ToolResult("edit_1", "edit", True, "e" * 1000))
+    session.add_assistant_tool_message("", (read_call,))
+    session.add_tool_result(ToolResult("read_1", "read_file", True, "r" * 1000))
+    session.add_assistant_tool_message("", (recent_call,))
+    session.add_tool_result(ToolResult("read_2", "read_file", True, "n" * 1000))
+
+    compacted = session.compact_oldest_tool_result(
+        replayable_tools=frozenset({"read_file"}),
+        preserve_recent=1,
+    )
+
+    assert compacted is not None
+    assert compacted["tool_call_id"] == "read_1"
+    transcript = session.transcript()
+    assert transcript[2]["content"] == "e" * 1000
+    marker = json.loads(transcript[4]["content"])
+    assert marker["result_compacted"] is True
+    assert marker["original_bytes"] == 1000
+    assert "r" * 20 not in transcript[4]["content"]
+    assert transcript[4]["tool_call_id"] == "read_1"
+    assert transcript[6]["content"] == "n" * 1000
+
+
 def test_tool_result_byte_limit_is_strict_and_preserves_digest() -> None:
     content, truncated = encode_tool_result(
         {"success": True, "content": "x" * 10000},
@@ -752,6 +781,154 @@ def test_context_failure_is_terminal_and_reports_exact_capacity(tmp_path) -> Non
     assert "agent.turn.failed" in event_types
     assert "agent.final" not in event_types
     assert event_types.count("task.report") == 1
+
+
+def test_long_session_compacts_old_reads_before_sending_one_model_request(tmp_path) -> None:
+    class RecoveringCapacityRuntime(ScriptedToolRuntime):
+        def __init__(self) -> None:
+            super().__init__([turn(text="Recovered and finished.")])
+            self.preflights: list[dict[str, Any]] = []
+
+        def stream_tool_turn(self, session, tools, **kwargs):
+            del tools
+            messages = session.transcript()
+            prompt_tokens = 1000 + sum(
+                len(message.get("content", "").encode("utf-8")) for message in messages
+            ) // 4
+            context_limit = 4096
+            safety_margin = kwargs["context_safety_margin_tokens"]
+            configured = 1200
+            available = context_limit - prompt_tokens - safety_margin
+            effective = max(0, min(configured, available))
+            capacity = {
+                "runtime": "scripted-qwen",
+                "context_limit": context_limit,
+                "exact_prompt_tokens": prompt_tokens,
+                "configured_max_tokens": configured,
+                "safety_margin_tokens": safety_margin,
+                "available_tokens": available,
+                "effective_max_tokens": effective,
+                "minimum_output_tokens": kwargs["minimum_output_tokens"],
+                "sufficient": effective >= kwargs["minimum_output_tokens"],
+            }
+            self.preflights.append(capacity)
+            yield ToolTurnChunk.started(metadata=capacity)
+            if not capacity["sufficient"]:
+                raise RuntimeError("native tool turn has insufficient context capacity")
+            self.requests.append(messages)
+            current = self.turns.popleft()
+            session.add_assistant_message(current.text)
+            yield ToolTurnChunk.text(current.text)
+            yield ToolTurnChunk.completed(current)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = RecoveringCapacityRuntime()
+    lab = make_lab(workspace, runtime)
+    sink = ListEventSink()
+    agent = lab.create_agent(event_sink=sink)
+    for index in range(5):
+        native_call = call(f"read_{index}", 0, "read_file", {"path": f"{index}.c"})
+        agent.session.add_assistant_tool_message("", (native_call,))
+        agent.session.add_tool_result(
+            ToolResult(f"read_{index}", "read_file", True, str(index) * 2000)
+        )
+    task = agent.create_task(title="Tool task", description="test")
+    limits = QwenToolAgentLimits(
+        context_recovery_target_tokens=1024,
+        preserve_recent_tool_results=2,
+    )
+    tool_agent = QwenToolAgent(
+        agent,
+        approval_gateway=ScriptedApproval([]),
+        limits=limits,
+    )
+
+    result = tool_agent.run(task, "Finish the task")
+
+    assert result.status == "completed"
+    assert len(runtime.requests) == 1
+    assert len(runtime.preflights) == 3
+    assert runtime.preflights[-1]["effective_max_tokens"] >= 1024
+    assert [item["exact_prompt_tokens"] for item in runtime.preflights] == sorted(
+        [item["exact_prompt_tokens"] for item in runtime.preflights], reverse=True
+    )
+    compacted = [
+        event for event in sink.events if event.event_type == "agent.context.compacted"
+    ]
+    assert [event.payload["tool_call_id"] for event in compacted] == ["read_0", "read_1"]
+    sent = runtime.requests[0]
+    sent_results = [message for message in sent if message["role"] == "tool"]
+    assert json.loads(sent_results[0]["content"])["result_compacted"] is True
+    assert json.loads(sent_results[1]["content"])["result_compacted"] is True
+    assert sent_results[-2]["content"] == "3" * 2000
+    assert sent_results[-1]["content"] == "4" * 2000
+    assert [message["tool_call_id"] for message in sent_results] == [
+        f"read_{index}" for index in range(5)
+    ]
+
+
+def test_measured_cjson_capacity_203_recovers_before_model_request(tmp_path) -> None:
+    class MeasuredCapacityRuntime(ScriptedToolRuntime):
+        def __init__(self) -> None:
+            super().__init__([turn(text="Corrective turn completed.")])
+            self.preflights: list[dict[str, Any]] = []
+
+        def stream_tool_turn(self, session, tools, **kwargs):
+            del tools
+            messages = session.transcript()
+            compacted = any(
+                message["role"] == "tool" and '"result_compacted":true' in message["content"]
+                for message in messages
+            )
+            prompt_tokens = 30000 if compacted else 32437
+            available = 32768 - prompt_tokens - 128
+            effective = max(0, min(4096, available))
+            capacity = {
+                "runtime": "sglang",
+                "context_limit": 32768,
+                "exact_prompt_tokens": prompt_tokens,
+                "configured_max_tokens": 4096,
+                "safety_margin_tokens": 128,
+                "available_tokens": available,
+                "effective_max_tokens": effective,
+                "minimum_output_tokens": kwargs["minimum_output_tokens"],
+                "sufficient": effective >= kwargs["minimum_output_tokens"],
+            }
+            self.preflights.append(capacity)
+            yield ToolTurnChunk.started(metadata=capacity)
+            if not capacity["sufficient"]:
+                raise RuntimeError("request must not be sent")
+            self.requests.append(messages)
+            current = self.turns.popleft()
+            session.add_assistant_message(current.text)
+            yield ToolTurnChunk.text(current.text)
+            yield ToolTurnChunk.completed(current)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = MeasuredCapacityRuntime()
+    lab = make_lab(workspace, runtime)
+    sink = ListEventSink()
+    agent = lab.create_agent(event_sink=sink)
+    for index in range(9):
+        native_call = call(f"read_{index}", 0, "read_file", {"path": f"{index}.c"})
+        agent.session.add_assistant_tool_message("", (native_call,))
+        agent.session.add_tool_result(
+            ToolResult(f"read_{index}", "read_file", True, str(index) * 1000)
+        )
+    task = agent.create_task(title="cJSON correction", description="test")
+    tool_agent = QwenToolAgent(agent, approval_gateway=ScriptedApproval([]))
+
+    result = tool_agent.run(task, "Continue after the failed cJSON test")
+
+    assert result.status == "completed"
+    assert runtime.preflights[0]["available_tokens"] == 203
+    assert runtime.preflights[0]["sufficient"] is False
+    assert runtime.preflights[1]["effective_max_tokens"] == 2640
+    assert len(runtime.requests) == 1
+    assert any(event.event_type == "agent.context.compacted" for event in sink.events)
+    assert not any(event.event_type == "agent.context.insufficient" for event in sink.events)
 
 
 def test_stream_error_is_not_treated_as_empty_final_answer(tmp_path) -> None:

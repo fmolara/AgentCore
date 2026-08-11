@@ -19,6 +19,12 @@ OpenAI streaming assembly, call-ID handling, context preflight, and error
 propagation. vLLM launch options are individually allowlisted in configuration;
 no arbitrary server arguments or model-visible shell tool are introduced.
 
+Long-session recovery is shared by all adapters. It preserves the native
+message sequence and tool-result IDs while eliding only old, replayable
+read-only result bodies after exact capacity preflight indicates pressure.
+Recent results and all mutation, approval, rejection, and check feedback remain
+verbatim. No model-specific loop or planner context path is involved.
+
 Qwen's prior `--agent qwen-tools` entry point and public Python names remain
 aliases for compatibility. New local deployments should use `--agent
 tool-loop`. Distributed exposure remains deferred.
