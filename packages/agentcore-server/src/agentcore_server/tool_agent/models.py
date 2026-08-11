@@ -23,6 +23,8 @@ class ToolAgentLimits:
     max_search_results: int = 100
     context_safety_margin_tokens: int = 128
     minimum_output_tokens: int = 256
+    context_recovery_target_tokens: int = 2048
+    preserve_recent_tool_results: int = 8
     max_edit_old_bytes: int = 64 * 1024
     max_edit_new_bytes: int = 64 * 1024
     max_write_file_bytes: int = 256 * 1024

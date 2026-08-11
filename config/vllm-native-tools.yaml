@@ -29,6 +29,8 @@ tool_agent:
   max_total_tool_result_bytes: 524288
   context_safety_margin_tokens: 128
   minimum_output_tokens: 256
+  context_recovery_target_tokens: 2048
+  preserve_recent_tool_results: 8
 
 workspace:
   checks:

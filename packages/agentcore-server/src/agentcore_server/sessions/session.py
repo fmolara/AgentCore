@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +18,7 @@ class Message:
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_success: bool | None = None
+    tool_result_compacted: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"role": self.role, "content": self.content}
@@ -62,6 +65,54 @@ class Session:
             )
         )
         self._touch()
+
+    def compact_oldest_tool_result(
+        self,
+        *,
+        replayable_tools: frozenset[str],
+        preserve_recent: int,
+    ) -> dict[str, Any] | None:
+        """Elide one old replayable result while preserving native call pairing."""
+        tool_indices = [
+            index for index, message in enumerate(self.messages) if message.role == "tool"
+        ]
+        protected = set(tool_indices[-preserve_recent:]) if preserve_recent else set()
+        for index in tool_indices:
+            message = self.messages[index]
+            if (
+                index in protected
+                or message.tool_result_compacted
+                or message.tool_name not in replayable_tools
+            ):
+                continue
+            encoded = message.content.encode("utf-8")
+            marker = json.dumps(
+                {
+                    "result_compacted": True,
+                    "tool": message.tool_name,
+                    "success": message.tool_success,
+                    "original_bytes": len(encoded),
+                    "sha256": sha256(encoded).hexdigest(),
+                    "instruction": "Re-run this read-only tool if the omitted result is needed.",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            marker_bytes = len(marker.encode("utf-8"))
+            if marker_bytes >= len(encoded):
+                continue
+            message.content = marker
+            message.tool_result_compacted = True
+            self._touch()
+            return {
+                "tool_call_id": message.tool_call_id,
+                "tool": message.tool_name,
+                "success": message.tool_success,
+                "original_bytes": len(encoded),
+                "compacted_bytes": marker_bytes,
+                "sha256": sha256(encoded).hexdigest(),
+            }
+        return None
 
     def transcript(self) -> list[dict[str, Any]]:
         return [message.as_dict() for message in self.messages]
