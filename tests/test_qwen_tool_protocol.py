@@ -147,6 +147,13 @@ def test_role_tool_result_is_sent_with_matching_id_on_next_turn() -> None:
         "content": '{"content":"x"}',
         "tool_call_id": "call_1",
     }
+    historical_call = second.server.payload["messages"][-2]["tool_calls"][0]
+    assert historical_call["id"] == "call_1"
+    assert historical_call["function"]["name"] == "read_file"
+    assert historical_call["function"]["arguments"] == '{"path":"a.c"}'
+    assert second.tokenizer.rendered_messages[-2]["tool_calls"][0]["function"][
+        "arguments"
+    ] == {"path": "a.c"}
 
 
 def test_tool_turn_clamps_output_to_remaining_context() -> None:

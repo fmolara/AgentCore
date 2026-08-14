@@ -52,7 +52,7 @@ class MistralToolProtocol(ToolProtocolAdapter):
     name = "mistral"
 
     def encode_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return _encode_openai_tool_arguments(messages)
+        return encode_openai_wire_messages(messages)
 
 
 class HarmonyToolProtocol(ToolProtocolAdapter):
@@ -65,7 +65,7 @@ class HarmonyToolProtocol(ToolProtocolAdapter):
 
     def encode_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         encoded: list[dict[str, Any]] = []
-        for message in _encode_openai_tool_arguments(messages):
+        for message in encode_openai_wire_messages(messages):
             item = dict(message)
             if item.get("role") == "system":
                 item["role"] = "developer"
@@ -92,10 +92,10 @@ def protocol_from_config(data: dict[str, Any] | None) -> ToolProtocolAdapter:
     raise ValueError(f"unsupported tool protocol: {name}")
 
 
-def _encode_openai_tool_arguments(
+def encode_openai_wire_messages(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Render assistant tool arguments in the OpenAI wire representation."""
+    """Render messages in the OpenAI-compatible HTTP wire representation."""
     encoded: list[dict[str, Any]] = []
     for message in messages:
         item = dict(message)
@@ -108,11 +108,21 @@ def _encode_openai_tool_arguments(
             encoded_call = dict(call)
             function = dict(encoded_call.get("function") or {})
             arguments = function.get("arguments")
-            if not isinstance(arguments, str):
+            if isinstance(arguments, str):
+                pass
+            elif arguments is None:
+                function["arguments"] = "{}"
+            elif isinstance(arguments, dict):
                 function["arguments"] = json.dumps(
-                    arguments if arguments is not None else {},
+                    arguments,
                     ensure_ascii=False,
                     separators=(",", ":"),
+                    allow_nan=False,
+                )
+            else:
+                raise TypeError(
+                    "OpenAI tool-call arguments must be a JSON object or string; "
+                    f"got {type(arguments).__name__}"
                 )
             encoded_call["function"] = function
             encoded_calls.append(encoded_call)

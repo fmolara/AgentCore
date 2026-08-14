@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from agentcore_server.tool_agent.protocols import (
     HarmonyToolProtocol,
     MistralToolProtocol,
     QwenToolProtocol,
+    encode_openai_wire_messages,
     protocol_from_config,
 )
 
@@ -61,6 +63,75 @@ def test_mistral_protocol_uses_openai_string_tool_arguments() -> None:
     assert assistant_tool_message()["tool_calls"][0]["function"]["arguments"] == {
         "path": "src/parser.c"
     }
+
+
+def test_openai_wire_arguments_preserve_nested_json_semantics() -> None:
+    arguments = {
+        "array": [1, 2.5, True, None, "line\n\"quoted\""],
+        "nested": {"unicode": "España"},
+    }
+    message = assistant_tool_message()
+    message["tool_calls"][0]["function"]["arguments"] = arguments
+
+    encoded = encode_openai_wire_messages([message])
+    argument_text = encoded[0]["tool_calls"][0]["function"]["arguments"]
+
+    assert isinstance(argument_text, str)
+    assert json.loads(argument_text) == arguments
+    assert message["tool_calls"][0]["function"]["arguments"] == arguments
+
+
+def test_openai_wire_arguments_do_not_double_encode_existing_text() -> None:
+    message = assistant_tool_message()
+    argument_text = '{ "path": "src/escaped\\nname.c" }'
+    message["tool_calls"][0]["function"]["arguments"] = argument_text
+
+    encoded = encode_openai_wire_messages([message])
+
+    assert encoded[0]["tool_calls"][0]["function"]["arguments"] == argument_text
+
+
+def test_openai_wire_arguments_preserve_malformed_model_text_for_rejection() -> None:
+    message = assistant_tool_message()
+    message["tool_calls"][0]["function"]["arguments"] = '{"path":'
+
+    encoded = encode_openai_wire_messages([message])
+
+    assert encoded[0]["tool_calls"][0]["function"]["arguments"] == '{"path":'
+
+
+@pytest.mark.parametrize("arguments", [["not", "an", "object"], 7, True])
+def test_openai_wire_arguments_reject_unsupported_representations(arguments) -> None:
+    message = assistant_tool_message()
+    message["tool_calls"][0]["function"]["arguments"] = arguments
+
+    with pytest.raises(TypeError, match="JSON object or string"):
+        encode_openai_wire_messages([message])
+
+
+def test_openai_wire_arguments_reject_non_json_numbers() -> None:
+    message = assistant_tool_message()
+    message["tool_calls"][0]["function"]["arguments"] = {"value": float("nan")}
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        encode_openai_wire_messages([message])
+
+
+def test_openai_wire_arguments_keep_multiple_calls_distinct() -> None:
+    message = assistant_tool_message()
+    message["tool_calls"].append({
+        "id": "call_2",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": {"path": "tests/test.c"}},
+    })
+
+    encoded = encode_openai_wire_messages([message])
+
+    assert [call["id"] for call in encoded[0]["tool_calls"]] == ["call_1", "call_2"]
+    assert [
+        json.loads(call["function"]["arguments"])["path"]
+        for call in encoded[0]["tool_calls"]
+    ] == ["src/parser.c", "tests/test.c"]
 
 
 def test_harmony_protocol_maps_developer_role_and_hides_reasoning_delta() -> None:

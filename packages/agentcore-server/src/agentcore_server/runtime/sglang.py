@@ -22,7 +22,10 @@ from agentcore_server.runtime.base import Runtime
 from agentcore_server.runtime.health import normalized_health, query_gpu
 from agentcore_server.runtime.server_process import RuntimeStreamError, ServerProcess
 from agentcore_server.sessions.session import Session
-from agentcore_server.tool_agent.protocols import protocol_from_config
+from agentcore_server.tool_agent.protocols import (
+    encode_openai_wire_messages,
+    protocol_from_config,
+)
 
 
 class ToolTurnContextCapacityError(RuntimeError):
@@ -177,7 +180,7 @@ class SGLangRuntime(Runtime):
 
         payload = {
             "model": self.config.get("model", {}).get("name", self.config["model"]["path"]),
-            "messages": messages,
+            "messages": encode_openai_wire_messages(messages),
             "temperature": generation.temperature,
             "top_p": generation.top_p,
             "max_tokens": generation.max_tokens,
@@ -261,7 +264,7 @@ class SGLangRuntime(Runtime):
             raise ToolTurnContextCapacityError(capacity)
         payload = {
             "model": self.config.get("model", {}).get("name", self.config["model"]["path"]),
-            "messages": messages,
+            "messages": encode_openai_wire_messages(messages),
             "tools": tools,
             "tool_choice": "auto",
             "parallel_tool_calls": True,
